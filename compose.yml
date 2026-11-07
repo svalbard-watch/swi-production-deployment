@@ -192,7 +192,7 @@ services:
     # merged. Once it merges and a new image is released, switch this healthcheck to
     # /ready so Swarm's start-first rolling update actually gates on real readiness
     # instead of bare liveness.
-    image: ghcr.io/svalbard-watch/swi-metobs-backend:3.3.2
+    image: ghcr.io/svalbard-watch/swi-metobs-backend:3.4.0
     cap_drop: [ALL]
     read_only: true
     volumes:
@@ -516,7 +516,7 @@ services:
   # swi-gate (basic auth, staging) and swi-open (no-op, production default).
 
   frontend:
-    image: ghcr.io/svalbard-watch/swi-frontend:2.8.0
+    image: ghcr.io/svalbard-watch/swi-frontend:2.9.0
     cap_drop: [ALL]
     read_only: true
     volumes:
