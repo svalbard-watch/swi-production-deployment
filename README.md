@@ -135,6 +135,14 @@ Real values for everything in `.env.example` live in Dokploy's own environment-v
 UI — nothing sensitive is committed here. See `API_KEYS.md` for exactly which env vars are
 real third-party API keys, what each one is for, and how to get one.
 
+## Legal documents
+
+The metobs backend serves the privacy policy and terms of service (`/v3/legal/...`) and the About-panel
+data (`/v3/project/...`) from its own origin: it fetches them from GitHub itself, at start-up and then
+every few hours, so visitors never contact GitHub. Set `SWI_LEGAL_REPO` (`owner/repo`) in the environment
+to publish the releases of your own legal repository; left unset, a neutral placeholder is served.
+The backend's own README lists every variable and how it stays within GitHub's rate limits.
+
 ## Release flow: `staging/X.Y.Z` → `pre-prod` → `main`
 
 1. **`staging/X.Y.Z`** — one branch per release cycle, cut from `main` the moment the
