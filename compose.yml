@@ -516,7 +516,7 @@ services:
   # swi-gate (basic auth, staging) and swi-open (no-op, production default).
 
   frontend:
-    image: ghcr.io/svalbard-watch/swi-frontend:2.9.0
+    image: ghcr.io/svalbard-watch/swi-frontend:2.9.1
     cap_drop: [ALL]
     read_only: true
     volumes:
