@@ -76,7 +76,7 @@ services:
   # MapProxy WMTS server, plus the sea-ice and avalanche cron caching jobs it depends on.
 
   mapproxy-server:
-    image: ghcr.io/svalbard-watch/swi-mapproxy:trixie-p3.13-mp7.0.0-0.0.17
+    image: ghcr.io/svalbard-watch/swi-mapproxy:trixie-p3.13-mp7.0.0-0.0.18
     cap_drop: [ALL]
     volumes:
       - map-data:/mapproxy/data
@@ -516,7 +516,7 @@ services:
   # swi-gate (basic auth, staging) and swi-open (no-op, production default).
 
   frontend:
-    image: ghcr.io/svalbard-watch/swi-frontend:2.9.1
+    image: ghcr.io/svalbard-watch/swi-frontend:2.10.0
     cap_drop: [ALL]
     read_only: true
     volumes:

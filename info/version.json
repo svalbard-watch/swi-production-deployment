@@ -1,12 +1,12 @@
 {
   "release": "3.0.0",
   "release_name": "PleaseSuggestArticAnimalsNames",
-  "release_date": "2026-11-08",
+  "release_date": "2026-11-09",
   "prerelease_type": null,
   "components": {
     "swi-mapproxy": {
       "url": "https://github.com/svalbard-watch/swi-mapproxy",
-      "version": "trixie-p3.13-mp7.0.0-0.0.17"
+      "version": "trixie-p3.13-mp7.0.0-0.0.18"
     },
     "swi-mapcache-seaice": {
       "url": "https://github.com/svalbard-watch/swi-mapcache-seaice",
@@ -38,7 +38,7 @@
     },
     "swi-frontend": {
       "url": "https://github.com/svalbard-watch/swi-frontend",
-      "version": "2.9.1"
+      "version": "2.10.0"
     }
   }
 }
