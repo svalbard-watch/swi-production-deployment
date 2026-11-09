@@ -551,6 +551,16 @@ services:
       - "traefik.http.middlewares.swi-open.headers.customrequestheaders.X-Swi-Gate=open"
 
       - "traefik.http.routers.frontend.middlewares=${SWI_AUTH_MIDDLEWARE:-swi-open}"
+
+      # Umami events: the tracker posts them without credentials (fetch-credentials=omit), so
+      # they must bypass the auth gate. The app only forwards events for its own website id.
+      - "traefik.http.routers.frontend-umami.rule=Host(`${SWI_FRONTEND_HOST?Variable not set}`) && Path(`/_umami/api/send`)"
+      - "traefik.http.routers.frontend-umami.priority=100"
+      - "traefik.http.routers.frontend-umami.entrypoints=websecure"
+      - "traefik.http.routers.frontend-umami.tls=true"
+      - "traefik.http.routers.frontend-umami.tls.certresolver=${TRAEFIK_CERT_RESOLVER-letsencrypt}"
+      - "traefik.http.routers.frontend-umami.service=frontend"
+
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/ || exit 1"]
       interval: 30s
