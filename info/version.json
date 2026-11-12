@@ -1,7 +1,7 @@
 {
   "release": "3.0.0",
   "release_name": "PleaseSuggestArticAnimalsNames",
-  "release_date": "2026-11-09",
+  "release_date": "2026-11-12",
   "prerelease_type": null,
   "components": {
     "swi-mapproxy": {
@@ -26,7 +26,7 @@
     },
     "swi-metobs-caching": {
       "url": "https://github.com/svalbard-watch/swi-metobs-caching",
-      "version": "0.1.0"
+      "version": "0.2.0"
     },
     "swi-aromearctic-caching": {
       "url": "https://github.com/svalbard-watch/swi-aromearctic-caching",
