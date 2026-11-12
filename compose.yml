@@ -403,7 +403,7 @@ services:
   # TODO: add a monitoring/heartbeat ping once the cache run completes, matching the
   # SWI_SEAICE_MONITORING_ENDPOINT / SWI_AVALANCHE_MONITORING_ENDPOINT pattern above.
   CRON_metobs_cache:
-    image: ghcr.io/svalbard-watch/swi-metobs-caching:0.1.0
+    image: ghcr.io/svalbard-watch/swi-metobs-caching:0.2.0
     cap_drop: [ALL]
     labels:
       - "traefik.enable=false"
