@@ -150,12 +150,15 @@ jobs:
         run: echo "$GHCR_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
 
       - name: Deploy the stack
+        # --with-registry-auth sends the runner's ghcr login to the Swarm node: unlike `docker compose
+        # up`, `docker stack deploy` lets the node pull the images, and swi-frontend is private, so
+        # without it the task is rejected with "No such image".
         # Cron services excluded through the override file (replicas 0): they need real
         # upstream API keys to fetch live data and aren't part of the "does the stack come up
         # healthy and route correctly" question this gate asks.
         run: |
           set -a; . ./.env; set +a
-          docker stack deploy --detach=true -c stack.yml -c .github/ci-override.yml swi
+          docker stack deploy --detach=true --with-registry-auth -c stack.yml -c .github/ci-override.yml swi
 
       - name: Wait for services to report healthy
         # Iterates every container per service, not just one: the filter below returns one ID
@@ -271,7 +274,7 @@ jobs:
             echo "SWI_BASICAUTH_USERS='smoke:${hash}'"
           } >> .env
           set -a; . ./.env; set +a
-          docker stack deploy --detach=true -c stack.yml -c .github/ci-override.yml swi
+          docker stack deploy --detach=true --with-registry-auth -c stack.yml -c .github/ci-override.yml swi
           # Traefik picks the changed labels up from the Swarm API; wait until the gate answers.
           for _ in $(seq 1 30); do
             code=$(curl -k -s -o /dev/null -w '%{http_code}' https://portal.localhost/)
