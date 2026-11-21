@@ -1,8 +1,10 @@
 # swi-production-deployment
 
 Deploys the SWI production stack to [Dokploy](https://dokploy.com) as a single Docker Swarm
-stack (`compose.yml`, single node, chosen for Dokploy's zero-downtime rolling-update
-support).
+stack (`stack.yml`, single node, chosen for Dokploy's zero-downtime rolling-update
+support). It is a stack file for `docker stack deploy`, not a Docker Compose file: Compose-only
+keys such as `restart`, `depends_on`, `pre_start` or container-level `labels` do not belong in it
+(`python scripts/lint_stack.py stack.yml` checks this, and CI runs it).
 
 ## Run it locally
 
@@ -10,12 +12,16 @@ Everything below runs the real stack on your own machine, behind the same Traefi
 and TLS setup Dokploy uses in production - the fastest way to see whether a change actually
 works before it goes anywhere near a promotion PR.
 
-**Prerequisites**: Docker Desktop (or another Docker Engine + Compose v2), and `openssl`
-(for the local TLS cert - already on macOS/Linux; on Windows, Git Bash ships it).
+**Prerequisites**: Docker Desktop (or another Docker Engine) with a single-node Swarm, Docker
+Compose v2 (only used for the local Traefik), and `openssl` (for the local TLS cert - already
+on macOS/Linux; on Windows, Git Bash ships it). A stack needs Swarm mode, so run
+`docker swarm init` once; undo it with `docker swarm leave --force`.
 
 ```bash
-# 1. Create the external network Dokploy provides in production
-docker network create dokploy-network
+# 1. Create the external network Dokploy provides in production (an attachable overlay
+#    network, so the Swarm services and the Traefik container can share it)
+docker swarm init   # skip if this Docker is already a Swarm manager
+docker network create --driver overlay --attachable dokploy-network
 
 # 2. Generate a local TLS cert and start Traefik (full detail: traefik-testing/readme.md)
 cd traefik-testing
@@ -36,12 +42,17 @@ it's meant to double as a template for real deployment, and running 9 containers
 services on a laptop is unnecessary weight for a dev loop.
 
 ```bash
-# 4. Bring the stack up (cron containers excluded - they need real upstream API keys,
-#    see API_KEYS.md if you want to run those too)
-docker compose -f compose.yml up -d redis mapproxy-server met-public-api met-tilling-api titiler-cache elevation_api frontend
+# 4. Deploy the stack. `docker stack deploy` does not read .env itself (Dokploy injects
+#    the variables in production), so export it into the shell first. The cron services
+#    need real upstream API keys to fetch data (see API_KEYS.md); with placeholder keys
+#    they just fail their first run, or scale them to 0 as below.
+set -a; . ./.env; set +a
+docker stack deploy -c stack.yml swi
+docker service scale swi_CRON_metobs_cache=0 swi_CRON_AAforecast_cache=0 \n  swi_CRON_avalanche_cache=0 swi_CRON_seaice_cache=0
 
 # Give services a minute to pass their start_period healthchecks
-docker compose ps
+docker stack services swi
+docker stack ps swi
 ```
 
 **Try it**:
@@ -51,7 +62,7 @@ docker compose ps
 - Titiller (tiles): `https://api.localhost/tiles/health`
 - Elevation API: `https://api.localhost/oeapi/v1/svalbard?locations=78.22,15.62`
   (Open Topo Data; the Open-Elevation `.../oeapi/v1/lookup` path still works during the
-  migration). The first start downloads and prepares the terrain model (`pre_start`), about
+  migration). The first start downloads and prepares the terrain model (before the server starts), about
   a minute for the 50 m model and a few minutes for the 20 m one
 - Traefik dashboard: `https://dashboard.localhost` (password `test123`, a local-only
   convenience credential, not a real secret)
@@ -60,25 +71,26 @@ All through the self-signed local cert - pass `-k`/`--insecure` with `curl`, or 
 through the browser warning.
 
 **A CORS asymmetry to know about going in**: mapproxy, titiller, and elevation_api enforce
-CORS at the Traefik layer (a `*cors` middleware label on each router in `compose.yml`);
+CORS at the Traefik layer (a `*cors` middleware label on each router in `stack.yml`);
 `met-public-api` instead enforces it at the application level (FastAPI's own CORS
 middleware, driven by the same `CORS_ALLOWED_ORIGINS` env var). Both end up producing the
 same `Access-Control-Allow-Origin` header from the client's point of view, just added by a
 different layer - this is intentional (stacking both on `met-public-api` would produce
 duplicate/conflicting headers), not something to "fix" if you notice it while poking around
-Traefik's config. See the comment at the top of `compose.yml` and
+Traefik's config. See the comment at the top of `stack.yml` and
 `traefik-testing/readme.md` (which also covers verifying it directly with `curl`) for more.
 
 **Tear down**:
 ```bash
-docker compose -f compose.yml down -v
+docker stack rm swi
 docker compose -f traefik-testing/compose.yml down -v
 docker network rm dokploy-network
+docker swarm leave --force   # only if you ran `docker swarm init` just for this
 ```
 
 ## What's in the stack
 
-`compose.yml` is one file, organized into three commented sections:
+`stack.yml` is one file, organized into commented sections:
 
 | Section | Services | Source repo |
 |---|---|---|
@@ -88,8 +100,8 @@ docker network rm dokploy-network
 | frontend | `frontend` | `swi-frontend` |
 
 Plus a shared `redis` used by both mapproxy (tile cache) and met-public-api (response
-cache). Routing and CORS are handled by Traefik via Docker labels (Dokploy runs Traefik on
-the `dokploy-network` external network) - see the CORS note above for the one exception.
+cache). Routing and CORS are handled by Traefik via Swarm service labels (`deploy.labels`;
+Dokploy runs Traefik on the `dokploy-network` external network) - see the CORS note above for the one exception.
 
 `mapproxy-server`, `met-public-api`, and `met-tilling-api` read their replica count from
 `SWI_MAPPROXY_REPLICAS`, `SWI_METOBS_REPLICAS` and `SWI_TITILER_REPLICAS` respectively
@@ -100,7 +112,7 @@ former single `SWI_SERVICE_REPLICAS`, which is no longer read.
 
 ### Staging vs production
 
-Both environments deploy this same `compose.yml`; the Dokploy environment variables make
+Both environments deploy this same `stack.yml`; the Dokploy environment variables make
 the difference.
 
 | | Production | Staging |
@@ -207,7 +219,7 @@ Locally, run `python update_versions.py --dry-run`. Tests: `pytest tests/`.
 
 ## Image vulnerability scan
 
-`.github/workflows/scan-deployed-images.yml` scans every image referenced by `compose.yml`
+`.github/workflows/scan-deployed-images.yml` scans every image referenced by `stack.yml`
 (the ones this organisation builds, and redis and nginx) with Trivy, daily and on pull
 requests that change the stack. It lists the fixable HIGH and CRITICAL findings per image in
 the run summary and as warnings.
