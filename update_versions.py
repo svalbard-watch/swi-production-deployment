@@ -120,9 +120,10 @@ def split_image(image):
 
 
 def find_images():
-    """Every (compose file, image) pair, using the same glob as update-info.py."""
+    """Every (compose or stack file, image) pair, using the same globs as update-info.py."""
     found = []
-    for compose_file in sorted(glob.glob("**/[cd]ompose*.yml", recursive=True)):
+    files = glob.glob("**/[cd]ompose*.yml", recursive=True) + glob.glob("**/stack*.yml", recursive=True)
+    for compose_file in sorted(files):
         with open(compose_file, encoding="utf-8") as f:
             try:
                 data = yaml.safe_load(f)

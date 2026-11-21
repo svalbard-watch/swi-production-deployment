@@ -1,6 +1,6 @@
 name: Scan deployed images
 
-# Scans every image referenced by compose.yml, not just the ones this organisation
+# Scans every image referenced by stack.yml, not just the ones this organisation
 # builds. A service repository only scans its image when its own CI runs, so a base
 # image fix released later (OpenSSL, libpcre2, ...) would go unnoticed in production;
 # redis and nginx have no CI at all. Runs daily, and on pull requests that change
@@ -14,7 +14,7 @@ on:
     - cron: "30 4 * * *"
   pull_request:
     paths:
-      - compose.yml
+      - stack.yml
       - .github/image-scan-exceptions.json
       - .github/workflows/scan-deployed-images.yml
       - scripts/scan_images.py
@@ -48,11 +48,11 @@ jobs:
       - name: Test the helper script
         run: python3 -m unittest discover -s tests -p 'test_scan_images.py' -v
 
-      - name: Build the scan matrix from compose.yml
+      - name: Build the scan matrix from stack.yml
         id: build
         run: |
           set -euo pipefail
-          MATRIX="$(python3 scripts/scan_images.py matrix compose.yml .github/image-scan-exceptions.json)"
+          MATRIX="$(python3 scripts/scan_images.py matrix stack.yml .github/image-scan-exceptions.json)"
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
           echo "$MATRIX" | python3 -m json.tool
 
