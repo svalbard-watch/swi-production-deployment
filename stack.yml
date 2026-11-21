@@ -147,8 +147,12 @@ services:
       - dokploy-network
       - internal
 
+  # The four CRON_* jobs are built on swi-cron-base: a Dokploy Schedule runs `run-cron` in the
+  # container, one run at a time. A run longer than SWI_CRON_MAX_SECONDS makes the container
+  # unhealthy, and Swarm then replaces it (which ends the stuck job). With 0 (or unset) any
+  # overlapping start is unhealthy. See https://github.com/svalbard-watch/swi-cron-base
   CRON_seaice_cache:
-    image: ghcr.io/svalbard-watch/swi-mapcache-seaice:0.2.1
+    image: ghcr.io/svalbard-watch/swi-mapcache-seaice:0.3.0
     cap_drop: [ALL]
     deploy:
       labels:
@@ -158,12 +162,13 @@ services:
       - map-metadata:/swi/metadata
     environment:
       - DOCKER_CRON=1
+      - SWI_CRON_MAX_SECONDS=${SWI_CRON_SEAICE_MAX_SECONDS:-180}
       - SWI_SEAICE_MONITORING_ENDPOINT=${SWI_SEAICE_MONITORING_ENDPOINT}
     networks:
       - internal
 
   CRON_avalanche_cache:
-    image: ghcr.io/svalbard-watch/swi-avalanche-caching:0.2.1
+    image: ghcr.io/svalbard-watch/swi-avalanche-caching:0.3.0
     cap_drop: [ALL]
     deploy:
       labels:
@@ -174,6 +179,7 @@ services:
       - aval-raster-cache:/swi/static
     environment:
       - DOCKER_CRON=1
+      - SWI_CRON_MAX_SECONDS=${SWI_CRON_AVALANCHE_MAX_SECONDS:-300}
       - SWI_AVALANCHE_MONITORING_ENDPOINT=${SWI_AVALANCHE_MONITORING_ENDPOINT}
     networks:
       - internal
@@ -396,7 +402,7 @@ services:
   # TODO: add a monitoring/heartbeat ping once the cache run completes, matching the
   # SWI_SEAICE_MONITORING_ENDPOINT / SWI_AVALANCHE_MONITORING_ENDPOINT pattern above.
   CRON_metobs_cache:
-    image: ghcr.io/svalbard-watch/swi-metobs-caching:0.2.0
+    image: ghcr.io/svalbard-watch/swi-metobs-caching:0.3.0
     cap_drop: [ALL]
     deploy:
       labels:
@@ -406,6 +412,8 @@ services:
       - met-realtime-data:/swi/data/realtime:rw
     environment:
       - DOCKER_CRON=1
+      # Every 10 minutes: a run that takes as long as the period has stalled.
+      - SWI_CRON_MAX_SECONDS=${SWI_CRON_METOBS_MAX_SECONDS:-600}
       - SWI_HOLFUY_API_KEY=${SWI_METOBS_HOLFUY_API_KEY?Variable not set}
       - SWI_FROST_API_KEY=${SWI_METOBS_FROST_API_KEY?Variable not set}
     networks:
@@ -415,7 +423,7 @@ services:
   # via a Dokploy Schedule, same DOCKER_CRON stay-alive pattern as above.
   # TODO: add a monitoring/heartbeat ping once the cache run completes.
   CRON_AAforecast_cache:
-    image: ghcr.io/svalbard-watch/swi-aromearctic-caching:0.1.0
+    image: ghcr.io/svalbard-watch/swi-aromearctic-caching:0.2.0
     cap_drop: [ALL]
     deploy:
       labels:
@@ -424,6 +432,7 @@ services:
       - met-forecast-data:/swi/data/forecast:rw
     environment:
       - DOCKER_CRON=1
+      - SWI_CRON_MAX_SECONDS=${SWI_CRON_AAFORECAST_MAX_SECONDS:-1200}
     networks:
       - internal
 

@@ -120,6 +120,29 @@ service here is `CRON_AAforecast_cache` (21 characters), so the whole stack name
 as project `swi-preprod` and app `stack` give `swi-preprod-stack-<suffix>` (about 24). The stack name
 also prefixes the volume and network names, so pick it once: renaming later creates new, empty volumes.
 
+### Cron jobs
+
+The four `CRON_*` services (`swi-metobs-caching`, `swi-aromearctic-caching`, `swi-avalanche-caching`,
+`swi-mapcache-seaice`) are built on [swi-cron-base](https://github.com/svalbard-watch/swi-cron-base).
+Each container runs its job once at start and stays alive; a Dokploy Schedule re-runs it with
+`run-cron` (`/swi/run-cron.sh`). The schedules live in the Dokploy UI, not in this repo.
+
+`run-cron` runs one job at a time. A start while a run is still active is skipped. A run longer than
+`SWI_CRON_MAX_SECONDS` makes the container **unhealthy**, and Swarm replaces it, which ends the stuck job
+(the replacement runs the job once on start). `0`, or unset, is strict: any overlapping start makes the
+container unhealthy.
+
+| Service | Schedule (Dokploy) | `SWI_CRON_MAX_SECONDS` default | Variable |
+|---|---|---|---|
+| `CRON_metobs_cache` | every 10 minutes | 600 | `SWI_CRON_METOBS_MAX_SECONDS` |
+| `CRON_AAforecast_cache` | 01:30, 07:30, 13:30, 19:30 UTC | 1200 | `SWI_CRON_AAFORECAST_MAX_SECONDS` |
+| `CRON_avalanche_cache` | daily | 300 | `SWI_CRON_AVALANCHE_MAX_SECONDS` |
+| `CRON_seaice_cache` | polled | 180 | `SWI_CRON_SEAICE_MAX_SECONDS` |
+
+To see a stuck job: `docker service ps <stack>_CRON_metobs_cache` shows the replaced tasks, and
+`docker inspect` on the container shows the healthcheck message (for example "run active for 640s, longer
+than SWI_CRON_MAX_SECONDS=600").
+
 ### Staging vs production
 
 Both environments deploy this same `stack.yml`; the Dokploy environment variables make
