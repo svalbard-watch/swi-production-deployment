@@ -15,11 +15,16 @@ This catches the ones that matter for stack.yml:
   - container-level `labels:` (Traefik's Swarm provider reads service labels, so they
     must be under deploy.labels)
   - bridge networks (a stack needs overlay networks)
+
+It also prints how long the stack name may be: Swarm names a service `<stack>_<service>` and
+refuses names over 63 characters, so the longest service name sets the limit.
 """
 
 import sys
 
 import yaml
+
+SWARM_NAME_LIMIT = 63
 
 SERVICE_KEYS = {
     "restart": "use deploy.restart_policy (the Swarm default is already condition: any)",
@@ -53,11 +58,19 @@ def lint(data):
     return problems
 
 
+def max_stack_name_length(data):
+    """Longest stack name for which every `<stack>_<service>` stays within Swarm's name limit."""
+    longest = max((len(name) for name in (data.get("services") or {})), default=0)
+    return SWARM_NAME_LIMIT - 1 - longest
+
+
 def main(paths):
     failed = False
     for path in paths:
         with open(path, encoding="utf-8") as f:
-            problems = lint(yaml.safe_load(f))
+            data = yaml.safe_load(f)
+        problems = lint(data)
+        print(f"{path}: the stack name (the Dokploy app name) may be at most {max_stack_name_length(data)} characters")
         for problem in problems:
             print(f"{path}: {problem}")
         failed = failed or bool(problems)

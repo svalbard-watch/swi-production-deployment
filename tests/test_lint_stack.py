@@ -7,7 +7,7 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from lint_stack import lint  # noqa: E402
+from lint_stack import lint, max_stack_name_length  # noqa: E402
 
 
 class LintStackTest(unittest.TestCase):
@@ -53,6 +53,16 @@ class LintStackTest(unittest.TestCase):
     def test_service_with_empty_spec_and_network_with_no_options(self):
         data = {"services": {"web": None}, "networks": {"internal": None}}
         self.assertEqual(lint(data), [])
+
+    def test_stack_name_budget_comes_from_the_longest_service_name(self):
+        data = {"services": {"redis": {}, "CRON_AAforecast_cache": {}}}
+        self.assertEqual(max_stack_name_length(data), 63 - 1 - len("CRON_AAforecast_cache"))
+
+    def test_repository_stack_name_budget_is_documented_correctly(self):
+        with open(ROOT / "stack.yml", encoding="utf-8") as f:
+            budget = max_stack_name_length(yaml.safe_load(f))
+        with open(ROOT / "README.md", encoding="utf-8") as f:
+            self.assertIn(f"at most {budget} characters", f.read())
 
     def test_repository_stack_file_is_clean(self):
         with open(ROOT / "stack.yml", encoding="utf-8") as f:

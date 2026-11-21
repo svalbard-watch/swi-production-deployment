@@ -110,6 +110,16 @@ project). `frontend` defaults to 1 (`SWI_FRONTEND_REPLICAS`). `elevation_api` al
 1 - it's already minimal in both environments, nothing to override. These replace the
 former single `SWI_SERVICE_REPLICAS`, which is no longer read.
 
+### Stack name (Dokploy app name) limit
+
+Swarm names every service `<stack name>_<service name>` and rejects names over 63 characters
+(`failed to create service ...: name must be 63 characters or fewer`). Dokploy builds the stack name
+as `<project>-<app name>-<random suffix>`, so long project and app names overflow it. The longest
+service here is `CRON_AAforecast_cache` (21 characters), so the whole stack name may be
+**at most 41 characters** (`python scripts/lint_stack.py stack.yml` prints the limit). Short names such
+as project `swi-preprod` and app `stack` give `swi-preprod-stack-<suffix>` (about 24). The stack name
+also prefixes the volume and network names, so pick it once: renaming later creates new, empty volumes.
+
 ### Staging vs production
 
 Both environments deploy this same `stack.yml`; the Dokploy environment variables make
