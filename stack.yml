@@ -1,8 +1,13 @@
-name: SW-SWI-SRM-Services
-
-# Single combined Dokploy stack (Docker Swarm mode, single node) for all SWI production
-# services. Dokploy currently only accepts one compose file per project, so this file is
-# kept readable through the section banners below rather than split across files.
+# Single combined Docker Swarm stack (single node), deployed by Dokploy as a "Stack" project,
+# for all SWI production services. This is a stack file, not a Compose file: it is deployed
+# with `docker stack deploy`, so it must not use Compose-only keys (top-level name, restart,
+# depends_on, pre_start, container-level labels, bridge networks). The checks in
+# scripts/lint_stack.py enforce that in CI. Dokploy currently only accepts one file per
+# project, so this file is kept readable through the section banners below rather than split.
+#
+# Swarm specifics: Traefik labels live under deploy.labels (service labels); services restart
+# by default (deploy.restart_policy defaults to condition: any), and start order is not
+# guaranteed, so every service has to retry its upstreams (redis, met-tilling-api) itself.
 #
 # CORS is enforced at the Traefik layer (accesscontrolalloworiginlist middleware) for
 # mapproxy-server, met-tilling-api and elevation_api, all of which have no CORS handling
@@ -42,14 +47,14 @@ services:
 
   redis:
     image: redis:8.10-alpine
-    restart: unless-stopped
     # The wrapper command below replaces the image's own switch to the redis user, so run as it
     # explicitly. The ACL file (it holds the password) is written to a private RAM /tmp.
     user: redis
     read_only: true
     cap_drop: [ALL]
-    labels:
-      - "traefik.enable=false"
+    deploy:
+      labels:
+        - "traefik.enable=false"
     command: >
       sh -c '
       umask 077 &&
@@ -82,7 +87,6 @@ services:
       - map-data:/mapproxy/data
       - map-metadata:/mapproxy/metadata
       - tiles-cache:/mapproxy/mbtiles/:rw
-    restart: unless-stopped
     deploy:
       replicas: ${SWI_MAPPROXY_REPLICAS:-3}
       update_config:
@@ -92,42 +96,42 @@ services:
         limits:
           cpus: '4'
           memory: 4G
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.mapproxy-server.rule=Host(`${SWI_MAPPROXY_HOST?Variable not set}`)"
-      - "traefik.http.routers.mapproxy-server.entrypoints=websecure"
-      - "traefik.http.routers.mapproxy-server.tls=true"
-      - "traefik.http.routers.mapproxy-server.tls.certresolver=${TRAEFIK_CERT_RESOLVER-letsencrypt}"
-      - "traefik.http.services.mapproxy-server.loadbalancer.server.port=8080"
-      - "traefik.docker.network=dokploy-network"
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.mapproxy-server.rule=Host(`${SWI_MAPPROXY_HOST?Variable not set}`)"
+        - "traefik.http.routers.mapproxy-server.entrypoints=websecure"
+        - "traefik.http.routers.mapproxy-server.tls=true"
+        - "traefik.http.routers.mapproxy-server.tls.certresolver=${TRAEFIK_CERT_RESOLVER-letsencrypt}"
+        - "traefik.http.services.mapproxy-server.loadbalancer.server.port=8080"
+        - "traefik.docker.network=dokploy-network"
 
-      # CORS middleware
-      - "traefik.http.middlewares.mapproxycors.headers.accesscontrolallowmethods=GET,POST,PUT,DELETE,OPTIONS"
-      - "traefik.http.middlewares.mapproxycors.headers.accesscontrolallowheaders=*"
-      - "traefik.http.middlewares.mapproxycors.headers.accesscontrolalloworiginlist=${CORS_ALLOWED_ORIGINS?Variable not set}"
-      - "traefik.http.middlewares.mapproxycors.headers.accesscontrolallowcredentials=true"
+        # CORS middleware
+        - "traefik.http.middlewares.mapproxycors.headers.accesscontrolallowmethods=GET,POST,PUT,DELETE,OPTIONS"
+        - "traefik.http.middlewares.mapproxycors.headers.accesscontrolallowheaders=*"
+        - "traefik.http.middlewares.mapproxycors.headers.accesscontrolalloworiginlist=${CORS_ALLOWED_ORIGINS?Variable not set}"
+        - "traefik.http.middlewares.mapproxycors.headers.accesscontrolallowcredentials=true"
 
-      # Additional headers middleware
-      - "traefik.http.middlewares.mapproxyheaders.headers.customrequestheaders.X-Forwarded-Proto=http"
-      - "traefik.http.middlewares.mapproxyheaders.headers.customrequestheaders.X-Forwarded-Host=${SWI_MAPPROXY_HOST?Variable not set}"
-      - "traefik.http.middlewares.mapproxyheaders.headers.customresponseheaders.Cache-Control=public, max-age=60, s-maxage=60"
-      # MapProxy itself unconditionally emits Access-Control-Allow-Origin: * on every
-      # response (confirmed directly against the backend, bypassing Traefik) -
-      # unrelated to mapproxy.yaml, it's MapProxy's own built-in default. Response
-      # middlewares apply in reverse of the request order below, so mapproxyheaders
-      # (listed second, so it sees the response first) strips that wildcard before
-      # mapproxycors (listed first, so it sees the response last) sets the real,
-      # origin-matched value - otherwise a non-matching Origin would still get the
-      # backend's raw "*" through untouched, since mapproxycors only sets the header
-      # on an actual match and never removes an existing one. An empty value here
-      # removes the header entirely (Traefik's documented behavior for this option).
-      - "traefik.http.middlewares.mapproxyheaders.headers.customresponseheaders.Access-Control-Allow-Origin="
+        # Additional headers middleware
+        - "traefik.http.middlewares.mapproxyheaders.headers.customrequestheaders.X-Forwarded-Proto=http"
+        - "traefik.http.middlewares.mapproxyheaders.headers.customrequestheaders.X-Forwarded-Host=${SWI_MAPPROXY_HOST?Variable not set}"
+        - "traefik.http.middlewares.mapproxyheaders.headers.customresponseheaders.Cache-Control=public, max-age=60, s-maxage=60"
+        # MapProxy itself unconditionally emits Access-Control-Allow-Origin: * on every
+        # response (confirmed directly against the backend, bypassing Traefik) -
+        # unrelated to mapproxy.yaml, it's MapProxy's own built-in default. Response
+        # middlewares apply in reverse of the request order below, so mapproxyheaders
+        # (listed second, so it sees the response first) strips that wildcard before
+        # mapproxycors (listed first, so it sees the response last) sets the real,
+        # origin-matched value - otherwise a non-matching Origin would still get the
+        # backend's raw "*" through untouched, since mapproxycors only sets the header
+        # on an actual match and never removes an existing one. An empty value here
+        # removes the header entirely (Traefik's documented behavior for this option).
+        - "traefik.http.middlewares.mapproxyheaders.headers.customresponseheaders.Access-Control-Allow-Origin="
 
-      # Apply middlewares
-      - "traefik.http.routers.mapproxy-server.middlewares=${SWI_AUTH_MIDDLEWARE:-swi-open},mapproxycors,mapproxyheaders"
+        # Apply middlewares
+        - "traefik.http.routers.mapproxy-server.middlewares=${SWI_AUTH_MIDDLEWARE:-swi-open},mapproxycors,mapproxyheaders"
 
-      # Sticky Session
-      - "traefik.http.services.mapproxy-server.loadbalancer.sticky=true"
+        # Sticky Session
+        - "traefik.http.services.mapproxy-server.loadbalancer.sticky=true"
     healthcheck:
       test: ["CMD-SHELL", "/mapproxy/health-check.sh"]
       interval: 60s
@@ -139,8 +143,6 @@ services:
       - MAPPROXY_REDIS_PORT=6379
       - MAPPROXY_REDIS_USERNAME=default
       - MAPPROXY_REDIS_PASSWORD=${SWI_REDIS_PWD}
-    depends_on:
-      - redis
     networks:
       - dokploy-network
       - internal
@@ -148,24 +150,24 @@ services:
   CRON_seaice_cache:
     image: ghcr.io/svalbard-watch/swi-mapcache-seaice:0.2.1
     cap_drop: [ALL]
-    labels:
-      - "traefik.enable=false"
+    deploy:
+      labels:
+        - "traefik.enable=false"
     volumes:
       - map-data:/swi/export
       - map-metadata:/swi/metadata
     environment:
       - DOCKER_CRON=1
       - SWI_SEAICE_MONITORING_ENDPOINT=${SWI_SEAICE_MONITORING_ENDPOINT}
-    depends_on:
-      - mapproxy-server
     networks:
       - internal
 
   CRON_avalanche_cache:
     image: ghcr.io/svalbard-watch/swi-avalanche-caching:0.2.1
     cap_drop: [ALL]
-    labels:
-      - "traefik.enable=false"
+    deploy:
+      labels:
+        - "traefik.enable=false"
     volumes:
       - map-data:/swi/data
       - map-metadata:/swi/metadata
@@ -173,8 +175,6 @@ services:
     environment:
       - DOCKER_CRON=1
       - SWI_AVALANCHE_MONITORING_ENDPOINT=${SWI_AVALANCHE_MONITORING_ENDPOINT}
-    depends_on:
-      - mapproxy-server
     networks:
       - internal
 
@@ -203,7 +203,6 @@ services:
       - met-forecast-data:/swi/data/forecast:ro
       - met-historical-data:/swi/data/historical:ro
       - met-realtime-data:/swi/data/realtime:ro
-    restart: always
     deploy:
       replicas: ${SWI_METOBS_REPLICAS:-3}
       update_config:
@@ -213,22 +212,22 @@ services:
         limits:
           cpus: '4'
           memory: 4G
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.metobs.rule=Host(`${SWI_APIS_HOST?Variable not set}`)  && PathPrefix(`${SWI_METOBS_API_ROUTE?Variable not set}`)"
-      - "traefik.http.routers.metobs.entrypoints=websecure"
-      - "traefik.http.routers.metobs.tls=true"
-      - "traefik.http.routers.metobs.tls.certresolver=${TRAEFIK_CERT_RESOLVER-letsencrypt}"
-      - "traefik.http.services.metobs.loadbalancer.server.port=${SWI_METOBS_INTERNAL_PORT:-8085}"
-      - "traefik.docker.network=dokploy-network"
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.metobs.rule=Host(`${SWI_APIS_HOST?Variable not set}`)  && PathPrefix(`${SWI_METOBS_API_ROUTE?Variable not set}`)"
+        - "traefik.http.routers.metobs.entrypoints=websecure"
+        - "traefik.http.routers.metobs.tls=true"
+        - "traefik.http.routers.metobs.tls.certresolver=${TRAEFIK_CERT_RESOLVER-letsencrypt}"
+        - "traefik.http.services.metobs.loadbalancer.server.port=${SWI_METOBS_INTERNAL_PORT:-8085}"
+        - "traefik.docker.network=dokploy-network"
 
-      # Sticky Session
-      - "traefik.http.services.metobs.loadbalancer.sticky=true"
+        # Sticky Session
+        - "traefik.http.services.metobs.loadbalancer.sticky=true"
 
-      # Middleware
-      - "traefik.http.middlewares.metobs-stripprefix.stripprefix.prefixes=${SWI_METOBS_API_ROUTE?Variable not set}"
+        # Middleware
+        - "traefik.http.middlewares.metobs-stripprefix.stripprefix.prefixes=${SWI_METOBS_API_ROUTE?Variable not set}"
 
-      - "traefik.http.routers.metobs.middlewares=${SWI_AUTH_MIDDLEWARE:-swi-open},metobs-stripprefix"
+        - "traefik.http.routers.metobs.middlewares=${SWI_AUTH_MIDDLEWARE:-swi-open},metobs-stripprefix"
     healthcheck:
       test: ["CMD-SHELL", "curl -sSf 'http://127.0.0.1:${SWI_METOBS_INTERNAL_PORT:-8085}/health' >/dev/null || exit 1"]
       interval: 60s
@@ -255,8 +254,6 @@ services:
       - SWI_PROJECT_INFO_CONTRIBUTORS_URL=${SWI_PROJECT_INFO_CONTRIBUTORS_URL:-}
       - SWI_PROJECT_INFO_REFERENCES_URL=${SWI_PROJECT_INFO_REFERENCES_URL:-}
       - SWI_PROJECT_INFO_RELEASE_URL=${SWI_PROJECT_INFO_RELEASE_URL:-}
-    depends_on:
-      - redis
     networks:
       - dokploy-network
       - internal
@@ -271,7 +268,6 @@ services:
         tmpfs:
           size: 67108864
       - met-forecast-data:/swi/data/forecast:ro
-    restart: always
     deploy:
       replicas: ${SWI_TITILER_REPLICAS:-3}
       update_config:
@@ -281,9 +277,9 @@ services:
         limits:
           cpus: '4'
           memory: 4G
-    # Not exposed through Traefik: public traffic goes through titiler-cache below.
-    labels:
-      - "traefik.enable=false"
+      labels:
+        # Not exposed through Traefik: public traffic goes through titiler-cache below.
+        - "traefik.enable=false"
     healthcheck:
       test: ["CMD-SHELL", "curl -sSf 'http://localhost:8085/health' >/dev/null || exit 1"]
       interval: 60s
@@ -299,12 +295,11 @@ services:
   # It is the only thing Traefik routes to for the titiler route, and the frontend's
   # same-origin proxy (staging) talks to it directly over the internal network.
   # The nginx config is written at start-up (same pattern as redis' ACL file) because
-  # Dokploy only deploys the compose file. `$$` is compose escaping for a literal `$`.
+  # Dokploy only deploys the stack file. `$$` is escaping for a literal `$`.
   # Titiler runs several replicas behind the Swarm VIP, so nginx resolves it through
   # Docker's embedded DNS at request time rather than once at start.
   titiler-cache:
     image: nginx:1.31-alpine
-    restart: unless-stopped
     # The master process starts as root to chown the cache directory and drop to the nginx
     # user for its workers, so keep exactly those capabilities.
     cap_drop: [ALL]
@@ -314,6 +309,26 @@ services:
       update_config:
         order: start-first
         failure_action: rollback
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.titiller.rule=Host(`${SWI_APIS_HOST?Variable not set}`)  && PathPrefix(`${SWI_TITILER_API_ROUTE?Variable not set}`)"
+        - "traefik.http.routers.titiller.entrypoints=websecure"
+        - "traefik.http.routers.titiller.tls=true"
+        - "traefik.http.routers.titiller.tls.certresolver=${TRAEFIK_CERT_RESOLVER-letsencrypt}"
+        - "traefik.http.services.titiller.loadbalancer.server.port=80"
+        - "traefik.docker.network=dokploy-network"
+
+        # CORS middleware (titiller has no CORS handling of its own). Applied by Traefik, after
+        # the cache, so cached bodies are shared between origins.
+        - "traefik.http.middlewares.titillercors.headers.accesscontrolallowmethods=GET,POST,PUT,DELETE,OPTIONS"
+        - "traefik.http.middlewares.titillercors.headers.accesscontrolallowheaders=*"
+        - "traefik.http.middlewares.titillercors.headers.accesscontrolalloworiginlist=${CORS_ALLOWED_ORIGINS?Variable not set}"
+        - "traefik.http.middlewares.titillercors.headers.accesscontrolallowcredentials=true"
+
+        # Middleware
+        - "traefik.http.middlewares.titiller-stripprefix.stripprefix.prefixes=${SWI_TITILER_API_ROUTE?Variable not set}"
+
+        - "traefik.http.routers.titiller.middlewares=${SWI_AUTH_MIDDLEWARE:-swi-open},titiller-stripprefix,titillercors"
     command:
       - sh
       - -c
@@ -365,34 +380,12 @@ services:
         exec nginx -g 'daemon off;'
     volumes:
       - titiler-cache:/var/cache/nginx/titiler
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.titiller.rule=Host(`${SWI_APIS_HOST?Variable not set}`)  && PathPrefix(`${SWI_TITILER_API_ROUTE?Variable not set}`)"
-      - "traefik.http.routers.titiller.entrypoints=websecure"
-      - "traefik.http.routers.titiller.tls=true"
-      - "traefik.http.routers.titiller.tls.certresolver=${TRAEFIK_CERT_RESOLVER-letsencrypt}"
-      - "traefik.http.services.titiller.loadbalancer.server.port=80"
-      - "traefik.docker.network=dokploy-network"
-
-      # CORS middleware (titiller has no CORS handling of its own). Applied by Traefik, after
-      # the cache, so cached bodies are shared between origins.
-      - "traefik.http.middlewares.titillercors.headers.accesscontrolallowmethods=GET,POST,PUT,DELETE,OPTIONS"
-      - "traefik.http.middlewares.titillercors.headers.accesscontrolallowheaders=*"
-      - "traefik.http.middlewares.titillercors.headers.accesscontrolalloworiginlist=${CORS_ALLOWED_ORIGINS?Variable not set}"
-      - "traefik.http.middlewares.titillercors.headers.accesscontrolallowcredentials=true"
-
-      # Middleware
-      - "traefik.http.middlewares.titiller-stripprefix.stripprefix.prefixes=${SWI_TITILER_API_ROUTE?Variable not set}"
-
-      - "traefik.http.routers.titiller.middlewares=${SWI_AUTH_MIDDLEWARE:-swi-open},titiller-stripprefix,titillercors"
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/nginx-health || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
-    depends_on:
-      - met-tilling-api
     networks:
       - dokploy-network
       - internal
@@ -405,8 +398,9 @@ services:
   CRON_metobs_cache:
     image: ghcr.io/svalbard-watch/swi-metobs-caching:0.2.0
     cap_drop: [ALL]
-    labels:
-      - "traefik.enable=false"
+    deploy:
+      labels:
+        - "traefik.enable=false"
     volumes:
       - met-historical-data:/swi/data/historical:rw
       - met-realtime-data:/swi/data/realtime:rw
@@ -423,8 +417,9 @@ services:
   CRON_AAforecast_cache:
     image: ghcr.io/svalbard-watch/swi-aromearctic-caching:0.1.0
     cap_drop: [ALL]
-    labels:
-      - "traefik.enable=false"
+    deploy:
+      labels:
+        - "traefik.enable=false"
     volumes:
       - met-forecast-data:/swi/data/forecast:rw
     environment:
@@ -442,13 +437,11 @@ services:
       OTD_URL_SVALBARD: ${SWI_ELEVATION_DTM_URL:-}
     volumes:
       - elevation_data_otd:/data
-    # Downloads and prepares the DTM once, before the container starts. It is not repeated
-    # when the container restarts, and runs once for the whole service whatever the replicas
-    # (per_replica: false, plus a lock in the script). Needs Docker Compose with pre_start.
-    pre_start:
-      - command: ["/opt/prepare-data.sh"]
-        per_replica: false
-    restart: always
+    # Docker Swarm has no pre_start step, so the DTM is downloaded and prepared by this wrapper
+    # before the server (the image's own CMD) starts. prepare-data.sh takes a lock on the shared
+    # volume and skips datasets that are already ready, so a restart or another replica does not
+    # download again. The healthcheck start_period below must cover the first download.
+    command: ["sh", "-c", "/opt/prepare-data.sh && exec sh /app/docker/run.sh"]
     deploy:
       replicas: 1
       update_config:
@@ -458,48 +451,50 @@ services:
         limits:
           cpus: '2'
           memory: 4G
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.oeapi.rule=Host(`${SWI_APIS_HOST?Variable not set}`)  && PathPrefix(`${SWI_ELEVATION_API_ROUTE?Variable not set}`)"
-      - "traefik.http.routers.oeapi.entrypoints=websecure"
-      - "traefik.http.routers.oeapi.tls=true"
-      - "traefik.http.routers.oeapi.tls.certresolver=${TRAEFIK_CERT_RESOLVER-letsencrypt}"
-      - "traefik.http.services.oeapi.loadbalancer.server.port=5000"
-      - "traefik.docker.network=dokploy-network"
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.oeapi.rule=Host(`${SWI_APIS_HOST?Variable not set}`)  && PathPrefix(`${SWI_ELEVATION_API_ROUTE?Variable not set}`)"
+        - "traefik.http.routers.oeapi.entrypoints=websecure"
+        - "traefik.http.routers.oeapi.tls=true"
+        - "traefik.http.routers.oeapi.tls.certresolver=${TRAEFIK_CERT_RESOLVER-letsencrypt}"
+        - "traefik.http.services.oeapi.loadbalancer.server.port=5000"
+        - "traefik.docker.network=dokploy-network"
 
-      # CORS middleware
-      - "traefik.http.middlewares.oeapicors.headers.accesscontrolallowmethods=GET,POST,PUT,DELETE,OPTIONS"
-      - "traefik.http.middlewares.oeapicors.headers.accesscontrolallowheaders=*"
-      - "traefik.http.middlewares.oeapicors.headers.accesscontrolalloworiginlist=${CORS_ALLOWED_ORIGINS?Variable not set}"
-      - "traefik.http.middlewares.oeapicors.headers.accesscontrolallowcredentials=true"
+        # CORS middleware
+        - "traefik.http.middlewares.oeapicors.headers.accesscontrolallowmethods=GET,POST,PUT,DELETE,OPTIONS"
+        - "traefik.http.middlewares.oeapicors.headers.accesscontrolallowheaders=*"
+        - "traefik.http.middlewares.oeapicors.headers.accesscontrolalloworiginlist=${CORS_ALLOWED_ORIGINS?Variable not set}"
+        - "traefik.http.middlewares.oeapicors.headers.accesscontrolallowcredentials=true"
 
-      # Middleware: rewrite the public route prefix to the app's own /api/ prefix. The service
-      # serves /api/v1/svalbard (Open Topo Data) and the deprecated Open-Elevation
-      # /api/v1/lookup alias, so /oeapi/v1/svalbard and /oeapi/v1/lookup both work.
-      - "traefik.http.middlewares.rewrite-oeapi.replacepathregex.regex=^${SWI_ELEVATION_API_ROUTE?Variable not set}(.*)"
-      - "traefik.http.middlewares.rewrite-oeapi.replacepathregex.replacement=/api/$$1"
+        # Middleware: rewrite the public route prefix to the app's own /api/ prefix. The service
+        # serves /api/v1/svalbard (Open Topo Data) and the deprecated Open-Elevation
+        # /api/v1/lookup alias, so /oeapi/v1/svalbard and /oeapi/v1/lookup both work.
+        - "traefik.http.middlewares.rewrite-oeapi.replacepathregex.regex=^${SWI_ELEVATION_API_ROUTE?Variable not set}(.*)"
+        - "traefik.http.middlewares.rewrite-oeapi.replacepathregex.replacement=/api/$$1"
 
-      # The Open-Elevation image this service used to run emitted Access-Control-Allow-*
-      # (Origin: *, ...) on every response through Flask-CORS. Open Topo Data sends no CORS
-      # headers (access_control_allow_origin: null), so this strip is now only a safeguard
-      # that keeps the proxy as the single owner of CORS, same as for mapproxy. Response
-      # middlewares apply in reverse of the request-order list below, so this needs to
-      # be LAST in that list (closest to the backend, so it's applied to the response
-      # first) to strip the backend's own headers before oeapicors sets the real,
-      # origin-matched value - otherwise a non-matching Origin would still get the
-      # backend's raw "*" through untouched. Empty values remove the headers entirely.
-      - "traefik.http.middlewares.oeapistrip.headers.customresponseheaders.Access-Control-Allow-Origin="
-      - "traefik.http.middlewares.oeapistrip.headers.customresponseheaders.Access-Control-Allow-Methods="
-      - "traefik.http.middlewares.oeapistrip.headers.customresponseheaders.Access-Control-Allow-Headers="
+        # The Open-Elevation image this service used to run emitted Access-Control-Allow-*
+        # (Origin: *, ...) on every response through Flask-CORS. Open Topo Data sends no CORS
+        # headers (access_control_allow_origin: null), so this strip is now only a safeguard
+        # that keeps the proxy as the single owner of CORS, same as for mapproxy. Response
+        # middlewares apply in reverse of the request-order list below, so this needs to
+        # be LAST in that list (closest to the backend, so it's applied to the response
+        # first) to strip the backend's own headers before oeapicors sets the real,
+        # origin-matched value - otherwise a non-matching Origin would still get the
+        # backend's raw "*" through untouched. Empty values remove the headers entirely.
+        - "traefik.http.middlewares.oeapistrip.headers.customresponseheaders.Access-Control-Allow-Origin="
+        - "traefik.http.middlewares.oeapistrip.headers.customresponseheaders.Access-Control-Allow-Methods="
+        - "traefik.http.middlewares.oeapistrip.headers.customresponseheaders.Access-Control-Allow-Headers="
 
-      # Apply middlewares
-      - "traefik.http.routers.oeapi.middlewares=${SWI_AUTH_MIDDLEWARE:-swi-open},rewrite-oeapi,oeapicors,oeapistrip"
+        # Apply middlewares
+        - "traefik.http.routers.oeapi.middlewares=${SWI_AUTH_MIDDLEWARE:-swi-open},rewrite-oeapi,oeapicors,oeapistrip"
     healthcheck:
       test: ["CMD-SHELL", "curl -sSf 'http://127.0.0.1:5000/v1/svalbard?locations=78.22,15.62' >/dev/null || exit 1"]
       interval: 60s
       timeout: 5s
       retries: 3
-      start_period: 120s
+      # Failures only count after this period, and a passing check ends it early. Long enough
+      # for the first DTM download and preparation (see command above); later starts skip it.
+      start_period: ${SWI_ELEVATION_START_PERIOD:-1800s}
     networks:
       - dokploy-network
       - internal
@@ -524,7 +519,6 @@ services:
         target: /tmp
         tmpfs:
           size: 67108864
-    restart: unless-stopped
     deploy:
       replicas: ${SWI_FRONTEND_REPLICAS:-1}
       update_config:
@@ -534,32 +528,32 @@ services:
         limits:
           cpus: '2'
           memory: 1G
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.frontend.rule=Host(`${SWI_FRONTEND_HOST?Variable not set}`)"
-      - "traefik.http.routers.frontend.entrypoints=websecure"
-      - "traefik.http.routers.frontend.tls=true"
-      - "traefik.http.routers.frontend.tls.certresolver=${TRAEFIK_CERT_RESOLVER-letsencrypt}"
-      - "traefik.http.services.frontend.loadbalancer.server.port=3000"
-      - "traefik.docker.network=dokploy-network"
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.frontend.rule=Host(`${SWI_FRONTEND_HOST?Variable not set}`)"
+        - "traefik.http.routers.frontend.entrypoints=websecure"
+        - "traefik.http.routers.frontend.tls=true"
+        - "traefik.http.routers.frontend.tls.certresolver=${TRAEFIK_CERT_RESOLVER-letsencrypt}"
+        - "traefik.http.services.frontend.loadbalancer.server.port=3000"
+        - "traefik.docker.network=dokploy-network"
 
-      # Auth gate shared by all routers. SWI_BASICAUTH_USERS is an htpasswd line list
-      # (comma separated); the default is an unusable placeholder so that selecting
-      # swi-gate without users fails closed instead of open. Unused when swi-open is active.
-      - "traefik.http.middlewares.swi-gate.basicauth.users=${SWI_BASICAUTH_USERS:-swi:$$apr1$$invalid$$invalidinvalidinvalid.}"
-      - "traefik.http.middlewares.swi-gate.basicauth.removeheader=true"
-      - "traefik.http.middlewares.swi-open.headers.customrequestheaders.X-Swi-Gate=open"
+        # Auth gate shared by all routers. SWI_BASICAUTH_USERS is an htpasswd line list
+        # (comma separated); the default is an unusable placeholder so that selecting
+        # swi-gate without users fails closed instead of open. Unused when swi-open is active.
+        - "traefik.http.middlewares.swi-gate.basicauth.users=${SWI_BASICAUTH_USERS:-swi:$$apr1$$invalid$$invalidinvalidinvalid.}"
+        - "traefik.http.middlewares.swi-gate.basicauth.removeheader=true"
+        - "traefik.http.middlewares.swi-open.headers.customrequestheaders.X-Swi-Gate=open"
 
-      - "traefik.http.routers.frontend.middlewares=${SWI_AUTH_MIDDLEWARE:-swi-open}"
+        - "traefik.http.routers.frontend.middlewares=${SWI_AUTH_MIDDLEWARE:-swi-open}"
 
-      # Umami events: the tracker posts them without credentials (fetch-credentials=omit), so
-      # they must bypass the auth gate. The app only forwards events for its own website id.
-      - "traefik.http.routers.frontend-umami.rule=Host(`${SWI_FRONTEND_HOST?Variable not set}`) && Path(`/_umami/api/send`)"
-      - "traefik.http.routers.frontend-umami.priority=100"
-      - "traefik.http.routers.frontend-umami.entrypoints=websecure"
-      - "traefik.http.routers.frontend-umami.tls=true"
-      - "traefik.http.routers.frontend-umami.tls.certresolver=${TRAEFIK_CERT_RESOLVER-letsencrypt}"
-      - "traefik.http.routers.frontend-umami.service=frontend"
+        # Umami events: the tracker posts them without credentials (fetch-credentials=omit), so
+        # they must bypass the auth gate. The app only forwards events for its own website id.
+        - "traefik.http.routers.frontend-umami.rule=Host(`${SWI_FRONTEND_HOST?Variable not set}`) && Path(`/_umami/api/send`)"
+        - "traefik.http.routers.frontend-umami.priority=100"
+        - "traefik.http.routers.frontend-umami.entrypoints=websecure"
+        - "traefik.http.routers.frontend-umami.tls=true"
+        - "traefik.http.routers.frontend-umami.tls.certresolver=${TRAEFIK_CERT_RESOLVER-letsencrypt}"
+        - "traefik.http.routers.frontend-umami.service=frontend"
 
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/ || exit 1"]
@@ -582,7 +576,6 @@ services:
       - NUXT_PUBLIC_MAP_DEFAULT_OPACITY=${NUXT_PUBLIC_MAP_DEFAULT_OPACITY:-100}
       - NUXT_PUBLIC_MAP_DEFAULT_LOCATION_X=${NUXT_PUBLIC_MAP_DEFAULT_LOCATION_X:-78.2}
       - NUXT_PUBLIC_MAP_DEFAULT_LOCATION_Y=${NUXT_PUBLIC_MAP_DEFAULT_LOCATION_Y:-15.6}
-      - NUXT_PUBLIC_ANALYTICS_WEBSITE_ID=${NUXT_PUBLIC_ANALYTICS_WEBSITE_ID:-}
       - NUXT_PUBLIC_ANALYTICS_WEBSITE_ID=${NUXT_PUBLIC_ANALYTICS_WEBSITE_ID:-}
       - NUXT_UMAMI_HOST=${NUXT_UMAMI_HOST:-}
       - NUXT_UMAMI_SCRIPT_NAME=${NUXT_UMAMI_SCRIPT_NAME:-}
@@ -617,4 +610,4 @@ networks:
   dokploy-network:
     external: true
   internal:
-    driver: bridge
+    driver: overlay
