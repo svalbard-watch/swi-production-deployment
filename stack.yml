@@ -442,7 +442,7 @@ services:
   # ── elevation-service ───────────────────────────────────────────────────
 
   elevation_api:
-    image: ghcr.io/svalbard-watch/swi-elevationapi:1.0.1
+    image: ghcr.io/svalbard-watch/swi-elevationapi:1.0.2
     environment:
       # Optional: another DTM archive (the CI smoke test uses the 50 m model). Empty = the 20 m
       # model of the image's datasets.json.
