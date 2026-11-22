@@ -74,9 +74,9 @@ jobs:
               args+=("$tmp/baseline.json")
             fi
             if [ -f scripts/promotion_summary.py ] && summary=$(python3 scripts/promotion_summary.py "${args[@]}"); then
-              printf 'Promotes `%s` to pre-prod, which deploys it to staging. Merge when ready.\n\n%s\n' "$branch" "$summary"
+              printf "Promotes \`%s\` to pre-prod, which deploys it to staging. Merge when ready.\n\n%s\n" "$branch" "$summary"
             else
-              printf 'Opened automatically - `%s` has commits pre-prod does not have yet. Merge when ready to deploy to staging.\n' "$branch"
+              printf "Opened automatically - \`%s\` has commits pre-prod does not have yet. Merge when ready to deploy to staging.\n" "$branch"
             fi
           }
 
