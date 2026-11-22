@@ -6,7 +6,7 @@
   "components": {
     "swi-mapproxy": {
       "url": "https://github.com/svalbard-watch/swi-mapproxy",
-      "version": "trixie-p3.13-mp7.0.0-0.0.18"
+      "version": "trixie-p3.13-mp7.0.0-0.0.20"
     },
     "swi-mapcache-seaice": {
       "url": "https://github.com/svalbard-watch/swi-mapcache-seaice",

@@ -81,7 +81,7 @@ services:
   # MapProxy WMTS server, plus the sea-ice and avalanche cron caching jobs it depends on.
 
   mapproxy-server:
-    image: ghcr.io/svalbard-watch/swi-mapproxy:trixie-p3.13-mp7.0.0-0.0.18
+    image: ghcr.io/svalbard-watch/swi-mapproxy:trixie-p3.13-mp7.0.0-0.0.20
     cap_drop: [ALL]
     volumes:
       - map-data:/mapproxy/data
