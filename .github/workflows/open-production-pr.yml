@@ -32,12 +32,14 @@ jobs:
       - name: Summarize component changes vs main
         id: summary
         run: |
+          # pyyaml: scripts/promotion_summary.py imports update-info.py, which needs it.
+          python3 -m pip install --quiet pyyaml
+          git show origin/main:info/version.json > "$RUNNER_TEMP/main-version.json"
+          args=("$RUNNER_TEMP/main-version.json" info/version.json)
+          [ -f info/.release-baseline.json ] && args+=(info/.release-baseline.json)
           {
             echo "body<<EOF"
-            echo "Promotes pre-prod (release \`${{ steps.version.outputs.version }}\`) to production."
-            echo
-            echo "Component versions changing:"
-            git diff origin/main HEAD -- info/version.json | grep '"version"' || echo "(no component version changes)"
+            python3 scripts/promotion_summary.py "${args[@]}"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
