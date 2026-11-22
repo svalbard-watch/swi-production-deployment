@@ -203,7 +203,9 @@ jobs:
         run: |
           set -euo pipefail
           for path in oeapi/v1/svalbard oeapi/v1/lookup; do
-            elevation=$(curl -k -sSf "https://api.localhost/$path?locations=78.2232,15.6261" | jq '.results[0].elevation')
+            # Retried: Traefik's swarm provider polls, so the route of the service that turned
+            # healthy last can still be a 404 for a few seconds.
+            elevation=$(curl -k -sSf --retry 12 --retry-delay 5 --retry-all-errors "https://api.localhost/$path?locations=78.2232,15.6261" | jq '.results[0].elevation')
             echo "$path -> $elevation"
             jq -en --argjson e "$elevation" '$e > 0 and $e < 200' >/dev/null
           done
