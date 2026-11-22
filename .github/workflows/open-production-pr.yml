@@ -17,8 +17,9 @@ jobs:
         # selected in the UI (defaults to the repo's default branch, i.e. main) if
         # left unset, not necessarily pre-prod - confirmed via a real run that
         # checked out main instead and broke every "pre-prod" git revision below.
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          persist-credentials: false
           ref: pre-prod
           fetch-depth: 0
 
@@ -31,12 +32,14 @@ jobs:
       - name: Summarize component changes vs main
         id: summary
         run: |
+          # pyyaml: scripts/promotion_summary.py imports update-info.py, which needs it.
+          python3 -m pip install --quiet pyyaml
+          git show origin/main:info/version.json > "$RUNNER_TEMP/main-version.json"
+          args=("$RUNNER_TEMP/main-version.json" info/version.json)
+          [ -f info/.release-baseline.json ] && args+=(info/.release-baseline.json)
           {
             echo "body<<EOF"
-            echo "Promotes pre-prod (release \`${{ steps.version.outputs.version }}\`) to production."
-            echo
-            echo "Component versions changing:"
-            git diff origin/main HEAD -- info/version.json | grep '"version"' || echo "(no component version changes)"
+            python3 scripts/promotion_summary.py --production "${args[@]}"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 

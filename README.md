@@ -1,8 +1,10 @@
 # swi-production-deployment
 
 Deploys the SWI production stack to [Dokploy](https://dokploy.com) as a single Docker Swarm
-stack (`compose.yml`, single node, chosen for Dokploy's zero-downtime rolling-update
-support).
+stack (`stack.yml`, single node, chosen for Dokploy's zero-downtime rolling-update
+support). It is a stack file for `docker stack deploy`, not a Docker Compose file: Compose-only
+keys such as `restart`, `depends_on`, `pre_start` or container-level `labels` do not belong in it
+(`python scripts/lint_stack.py stack.yml` checks this, and CI runs it).
 
 ## Run it locally
 
@@ -10,12 +12,16 @@ Everything below runs the real stack on your own machine, behind the same Traefi
 and TLS setup Dokploy uses in production - the fastest way to see whether a change actually
 works before it goes anywhere near a promotion PR.
 
-**Prerequisites**: Docker Desktop (or another Docker Engine + Compose v2), and `openssl`
-(for the local TLS cert - already on macOS/Linux; on Windows, Git Bash ships it).
+**Prerequisites**: Docker Desktop (or another Docker Engine) with a single-node Swarm, Docker
+Compose v2 (only used for the local Traefik), and `openssl` (for the local TLS cert - already
+on macOS/Linux; on Windows, Git Bash ships it). A stack needs Swarm mode, so run
+`docker swarm init` once; undo it with `docker swarm leave --force`.
 
 ```bash
-# 1. Create the external network Dokploy provides in production
-docker network create dokploy-network
+# 1. Create the external network Dokploy provides in production (an attachable overlay
+#    network, so the Swarm services and the Traefik container can share it)
+docker swarm init   # skip if this Docker is already a Swarm manager
+docker network create --driver overlay --attachable dokploy-network
 
 # 2. Generate a local TLS cert and start Traefik (full detail: traefik-testing/readme.md)
 cd traefik-testing
@@ -30,17 +36,23 @@ cp .env.example .env
 ```
 
 Now edit `.env`: everything already defaults to `*.localhost` hosts, fine as-is for local
-testing, but set **`SWI_SERVICE_REPLICAS=1`** - the example file defaults to `3` (production's
-value) since it's meant to double as a template for real deployment, and running 9
-containers for 3 services on a laptop is unnecessary weight for a dev loop.
+testing, but set **`SWI_MAPPROXY_REPLICAS=1`, `SWI_TITILER_REPLICAS=1` and
+`SWI_METOBS_REPLICAS=1`** - the example file defaults to `3` (production's value) since
+it's meant to double as a template for real deployment, and running 9 containers for 3
+services on a laptop is unnecessary weight for a dev loop.
 
 ```bash
-# 4. Bring the stack up (cron containers excluded - they need real upstream API keys,
-#    see API_KEYS.md if you want to run those too)
-docker compose -f compose.yml up -d redis mapproxy-server met-public-api met-tilling-api elevation_api
+# 4. Deploy the stack. `docker stack deploy` does not read .env itself (Dokploy injects
+#    the variables in production), so export it into the shell first. The cron services
+#    need real upstream API keys to fetch data (see API_KEYS.md); with placeholder keys
+#    they just fail their first run, or scale them to 0 as below.
+set -a; . ./.env; set +a
+docker stack deploy -c stack.yml swi
+docker service scale swi_CRON_metobs_cache=0 swi_CRON_AAforecast_cache=0 \n  swi_CRON_avalanche_cache=0 swi_CRON_seaice_cache=0
 
 # Give services a minute to pass their start_period healthchecks
-docker compose ps
+docker stack services swi
+docker stack ps swi
 ```
 
 **Try it**:
@@ -48,7 +60,10 @@ docker compose ps
 - Met observations API: `https://api.localhost/public/health` (the bare `/public/` root
   404s - neither this API nor Titiller define a root handler, only specific routes)
 - Titiller (tiles): `https://api.localhost/tiles/health`
-- Elevation API: `https://api.localhost/oeapi/v1/lookup?locations=78.22,15.62`
+- Elevation API: `https://api.localhost/oeapi/v1/svalbard?locations=78.22,15.62`
+  (Open Topo Data; the Open-Elevation `.../oeapi/v1/lookup` path still works during the
+  migration). The first start downloads and prepares the terrain model (before the server starts), about
+  a minute for the 50 m model and a few minutes for the 20 m one
 - Traefik dashboard: `https://dashboard.localhost` (password `test123`, a local-only
   convenience credential, not a real secret)
 
@@ -56,40 +71,102 @@ All through the self-signed local cert - pass `-k`/`--insecure` with `curl`, or 
 through the browser warning.
 
 **A CORS asymmetry to know about going in**: mapproxy, titiller, and elevation_api enforce
-CORS at the Traefik layer (a `*cors` middleware label on each router in `compose.yml`);
+CORS at the Traefik layer (a `*cors` middleware label on each router in `stack.yml`);
 `met-public-api` instead enforces it at the application level (FastAPI's own CORS
 middleware, driven by the same `CORS_ALLOWED_ORIGINS` env var). Both end up producing the
 same `Access-Control-Allow-Origin` header from the client's point of view, just added by a
 different layer - this is intentional (stacking both on `met-public-api` would produce
 duplicate/conflicting headers), not something to "fix" if you notice it while poking around
-Traefik's config. See the comment at the top of `compose.yml` and
+Traefik's config. See the comment at the top of `stack.yml` and
 `traefik-testing/readme.md` (which also covers verifying it directly with `curl`) for more.
 
 **Tear down**:
 ```bash
-docker compose -f compose.yml down -v
+docker stack rm swi
 docker compose -f traefik-testing/compose.yml down -v
 docker network rm dokploy-network
+docker swarm leave --force   # only if you ran `docker swarm init` just for this
 ```
 
 ## What's in the stack
 
-`compose.yml` is one file, organized into three commented sections:
+`stack.yml` is one file, organized into commented sections:
 
 | Section | Services | Source repo |
 |---|---|---|
 | map-service | `mapproxy-server`, `CRON_seaice_cache`, `CRON_avalanche_cache` | `swi-mapproxy`, `swi-mapcache-seaice`, `swi-avalanche-caching` |
 | met-service | `met-public-api`, `met-tilling-api`, `CRON_metobs_cache`, `CRON_AAforecast_cache` | `swi-metobs-backend`, `swi-titiller`, `swi-metobs-caching`, `swi-aromearctic-caching` |
 | elevation-service | `elevation_api` | `swi-elevationapi` |
+| frontend | `frontend` | `swi-frontend` |
 
 Plus a shared `redis` used by both mapproxy (tile cache) and met-public-api (response
-cache). Routing and CORS are handled by Traefik via Docker labels (Dokploy runs Traefik on
-the `dokploy-network` external network) - see the CORS note above for the one exception.
+cache). Routing and CORS are handled by Traefik via Swarm service labels (`deploy.labels`;
+Dokploy runs Traefik on the `dokploy-network` external network) - see the CORS note above for the one exception.
 
 `mapproxy-server`, `met-public-api`, and `met-tilling-api` read their replica count from
-`SWI_SERVICE_REPLICAS` (default `3`, production's value - unset in Dokploy, it behaves
-exactly as before this variable existed). `elevation_api` always runs 1 - it's already
-minimal in both environments, nothing to override.
+`SWI_MAPPROXY_REPLICAS`, `SWI_METOBS_REPLICAS` and `SWI_TITILER_REPLICAS` respectively
+(each defaults to `3`, production's value - leave them unset in the production Dokploy
+project). `frontend` defaults to 1 (`SWI_FRONTEND_REPLICAS`). `elevation_api` always runs
+1 - it's already minimal in both environments, nothing to override. These replace the
+former single `SWI_SERVICE_REPLICAS`, which is no longer read.
+
+### Stack name (Dokploy app name) limit
+
+Swarm names every service `<stack name>_<service name>` and rejects names over 63 characters
+(`failed to create service ...: name must be 63 characters or fewer`). Dokploy builds the stack name
+as `<project>-<app name>-<random suffix>`, so long project and app names overflow it. The longest
+service here is `CRON_AAforecast_cache` (21 characters), so the whole stack name may be
+**at most 41 characters** (`python scripts/lint_stack.py stack.yml` prints the limit). Short names such
+as project `swi-preprod` and app `stack` give `swi-preprod-stack-<suffix>` (about 24). The stack name
+also prefixes the volume and network names, so pick it once: renaming later creates new, empty volumes.
+
+### Cron jobs
+
+The four `CRON_*` services (`swi-metobs-caching`, `swi-aromearctic-caching`, `swi-avalanche-caching`,
+`swi-mapcache-seaice`) are built on [swi-cron-base](https://github.com/svalbard-watch/swi-cron-base).
+Each container runs its job once at start and stays alive; a Dokploy Schedule re-runs it with
+`run-cron` (`/swi/run-cron.sh`). The schedules live in the Dokploy UI, not in this repo.
+
+`run-cron` runs one job at a time. A start while a run is still active is skipped. A run longer than
+`SWI_CRON_MAX_SECONDS` makes the container **unhealthy**, and Swarm replaces it, which ends the stuck job
+(the replacement runs the job once on start). `0`, or unset, is strict: any overlapping start makes the
+container unhealthy.
+
+| Service | Schedule (Dokploy) | `SWI_CRON_MAX_SECONDS` default | Variable |
+|---|---|---|---|
+| `CRON_metobs_cache` | every 10 minutes | 600 | `SWI_CRON_METOBS_MAX_SECONDS` |
+| `CRON_AAforecast_cache` | 01:30, 07:30, 13:30, 19:30 UTC | 1200 | `SWI_CRON_AAFORECAST_MAX_SECONDS` |
+| `CRON_avalanche_cache` | daily | 300 | `SWI_CRON_AVALANCHE_MAX_SECONDS` |
+| `CRON_seaice_cache` | polled | 180 | `SWI_CRON_SEAICE_MAX_SECONDS` |
+
+To see a stuck job: `docker service ps <stack>_CRON_metobs_cache` shows the replaced tasks, and
+`docker inspect` on the container shows the healthcheck message (for example "run active for 640s, longer
+than SWI_CRON_MAX_SECONDS=600").
+
+### Staging vs production
+
+Both environments deploy this same `stack.yml`; the Dokploy environment variables make
+the difference.
+
+| | Production | Staging |
+|---|---|---|
+| Replicas | defaults (3 / 3 / 3) | `SWI_MAPPROXY_REPLICAS=1`, `SWI_TITILER_REPLICAS=1` (metobs stays 3) |
+| Password | none (`SWI_AUTH_MIDDLEWARE` unset, no-op `swi-open`) | `SWI_AUTH_MIDDLEWARE=swi-gate` + `SWI_BASICAUTH_USERS` (HTTP basic auth on every public router) |
+| Frontend mode | **direct**: `NUXT_PUBLIC_ENDPOINTS_*` are absolute `https://api.…` / `https://mapserver.…` URLs, `NUXT_BACKEND_*` unset, `CORS_ALLOWED_ORIGINS` includes `https://<SWI_FRONTEND_HOST>` | **same-origin proxy**: `NUXT_PUBLIC_ENDPOINTS_*` relative, `NUXT_BACKEND_*` = internal service URLs (see `.env.example`) |
+
+Staging must use proxy mode: browsers don't send basic-auth credentials on cross-origin
+requests and CORS preflights never carry them, so a password on the API hosts would break
+the app in direct mode. In proxy mode the browser only talks to the frontend host, so one
+login covers everything (the API/mapserver hosts stay password-protected too).
+
+### Titiler cache
+
+`met-tilling-api` is no longer routed by Traefik. The `titiler-cache` service (nginx)
+sits in front of it: successful `GET`/`HEAD` responses are cached for 10 minutes (stale
+copies are served on errors or while refreshing, `/health` is never cached, and every
+response carries `X-Cache-Status: HIT|MISS|BYPASS|STALE`). The cache is shared by the
+public `/tiles/` route and the staging frontend proxy, lives in the `titiler-cache`
+volume (max 2 GB), and CORS is still added by Traefik after it.
 
 Two repos feed config into running containers at boot rather than build time —
 `swi-mapproxy-configuration` (mapproxy.yaml) and `swi-metobs-station-configuration`
@@ -102,6 +179,14 @@ tag.
 Real values for everything in `.env.example` live in Dokploy's own environment-variable
 UI — nothing sensitive is committed here. See `API_KEYS.md` for exactly which env vars are
 real third-party API keys, what each one is for, and how to get one.
+
+## Legal documents
+
+The metobs backend serves the privacy policy and terms of service (`/v3/legal/...`) and the About-panel
+data (`/v3/project/...`) from its own origin: it fetches them from GitHub itself, at start-up and then
+every few hours, so visitors never contact GitHub. Set `SWI_LEGAL_REPO` (`owner/repo`) in the environment
+to publish the releases of your own legal repository; left unset, a neutral placeholder is served.
+The backend's own README lists every variable and how it stays within GitHub's rate limits.
 
 ## Release flow: `staging/X.Y.Z` → `pre-prod` → `main`
 
@@ -149,7 +234,7 @@ same shape as the pinned one:
 
 Then, against the newest `staging/*` branch:
 
-- **Our `ghcr.io/unis-svalbard-weather-information/*` images**, majors included:
+- **Our `ghcr.io/svalbard-watch/*` images**, majors included:
   - committed directly as `[BOT] Bump service images: …`, together with the regenerated
     `info/version.json`
   - the pre-prod promotion PR is then (re)opened right away
@@ -165,13 +250,31 @@ Then, against the newest `staging/*` branch:
 
 Locally, run `python update_versions.py --dry-run`. Tests: `pytest tests/`.
 
+## Image vulnerability scan
+
+`.github/workflows/scan-deployed-images.yml` scans every image referenced by `stack.yml`
+(the ones this organisation builds, and redis and nginx) with Trivy, daily and on pull
+requests that change the stack. It lists the fixable HIGH and CRITICAL findings per image in
+the run summary and as warnings.
+
+- It starts in **report mode**: `ENFORCE: "false"` at the top of the workflow. Set it to
+  `"true"` to make findings fail the run for every image that has no exception.
+- An image that cannot be fixed yet goes in `.github/image-scan-exceptions.json` with a
+  reason and an end date (`swi-elevationapi` today, until OpenTopoData replaces it). It is
+  still scanned and shown, but never fails the run, and the exception stops working on its
+  end date.
+- `scripts/scan_images.py` builds the image list and the summary; its tests run first
+  (`python -m unittest tests/test_scan_images.py`).
+- `swi-frontend` is a private package: its "Manage Actions access" setting must grant this
+  repository read access.
+
 ## Per-service repos
 
-The 8 image-producing services (excluding `swi-mapproxy`, which still tags manually — its
-tag scheme isn't semver) use [release-please](https://github.com/googleapis/release-please)
+The image-producing services use [release-please](https://github.com/googleapis/release-please)
 for their own releases: commits accumulate into a standing release PR, and merging it cuts
-the tag that triggers that repo's existing `docker-build-push.yml`. Renovate is also enabled
-in each of those repos for their own dependency/Action updates, independent of the
-deployment-repo automation above.
+the tag and builds the image in the same workflow run. `swi-mapproxy` is the exception
+because its tag scheme isn't semver (`trixie-p3.13-mp7.0.0-0.0.13`): every merge that changes
+the image releases it, see that repo's README. Dependabot, not Renovate, keeps each repo's
+dependencies and Actions up to date, independent of the deployment-repo automation above.
 
 Made with puffins and polar bears helped by Claude :-)

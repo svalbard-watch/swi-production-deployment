@@ -1,0 +1,188 @@
+name: PR commands
+
+# Slash commands in a comment on a promotion PR, for maintainers (see scripts/pr_commands.py):
+#   /ignore <image> <CVE-id | all> <reason> [until YYYY-MM-DD]   acknowledge image scan findings
+#   /name <release name>                                          set the release name
+#   /add-ref + a ```bibtex block                                  add a reference to info/references.json
+#
+# Safety: issue_comment runs the workflow from the default branch with a write token, so this
+# workflow never runs code from a PR. The scripts come from the default branch; the PR branch is only
+# checked out as data (version.json, references.json) and parsed as JSON. The comment text reaches
+# the scripts through an environment variable only.
+#
+# Who: collaborators with maintain or admin permission, which is the devops-team's access level
+# (GITHUB_TOKEN cannot read organisation team membership).
+#
+# /name and /add-ref commit to the PR branch, so they only work on staging/* -> pre-prod PRs. They
+# use the PR_COMMANDS_TOKEN secret (a token allowed to push to staging/* branches) so the push
+# triggers the PR checks again, which a GITHUB_TOKEN push would not.
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-commands-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  command:
+    name: Run the command
+    if: >-
+      github.event.issue.pull_request &&
+      (startsWith(github.event.comment.body, '/ignore') ||
+       startsWith(github.event.comment.body, '/name') ||
+       startsWith(github.event.comment.body, '/add-ref'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write # replies and the gate comment
+      issues: write
+      actions: write # re-run the gate after an acknowledgement
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      COMMENT_BODY: ${{ github.event.comment.body }}
+      ACK_USER: ${{ github.event.comment.user.login }}
+      PR: ${{ github.event.issue.number }}
+    steps:
+      - name: Checkout the default branch (the scripts)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          path: tools
+
+      - name: Which command?
+        id: parse
+        run: |
+          echo "command=$(python3 tools/scripts/pr_commands.py parse | python3 -c 'import json,sys; print(json.load(sys.stdin)["command"] or "")')" >> "$GITHUB_OUTPUT"
+
+      - name: Check who is asking
+        id: who
+        if: steps.parse.outputs.command != ''
+        env:
+          COMMAND: ${{ steps.parse.outputs.command }}
+        run: |
+          permission=$(gh api "repos/$GITHUB_REPOSITORY/collaborators/$ACK_USER/permission" --jq .permission || echo none)
+          if [ "$permission" = "admin" ] || [ "$permission" = "maintain" ]; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+            gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" \
+              --body "@$ACK_USER only maintainers (the devops-team) can use \`$COMMAND\`."
+          fi
+
+      - name: Read the pull request
+        id: pr
+        if: steps.who.outputs.allowed == 'true'
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" \
+            --jq '"head=\(.head.ref)\nbase=\(.base.ref)\nsha=\(.head.sha)\nsame_repo=\(.head.repo.full_name == env.GITHUB_REPOSITORY)"' >> "$GITHUB_OUTPUT"
+
+      # ---- /ignore -----------------------------------------------------------------------
+      - name: Acknowledge the finding
+        id: ignore
+        if: steps.who.outputs.allowed == 'true' && steps.parse.outputs.command == '/ignore'
+        run: |
+          set -uo pipefail
+          # The acknowledgements live in the gate's own comment (written by the bot only).
+          gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("<!-- swi-image-gate -->"))) | .id' \
+            | head -1 > comment-id.txt
+          : > comment.md
+          if [ -s comment-id.txt ]; then
+            gh api "repos/$GITHUB_REPOSITORY/issues/comments/$(cat comment-id.txt)" --jq .body > comment.md
+          fi
+          python3 tools/scripts/scan_images.py acks comment.md > acks.json
+          python3 tools/scripts/pr_commands.py ignore acks.json tools/stack.yml > reply.md
+          status=$?
+          if [ "$status" -eq 0 ]; then
+            python3 tools/scripts/scan_images.py set-acks comment.md acks.json
+            if [ -s comment-id.txt ]; then
+              gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$(cat comment-id.txt)" -F body=@comment.md >/dev/null
+            else
+              gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@comment.md >/dev/null
+            fi
+            echo "rerun=true" >> "$GITHUB_OUTPUT"
+          elif [ "$status" -ne 3 ]; then
+            echo "The command failed unexpectedly, see the workflow run." > reply.md
+          fi
+          exit 0
+
+      - name: Re-run the gate
+        if: steps.ignore.outputs.rerun == 'true'
+        env:
+          SHA: ${{ steps.pr.outputs.sha }}
+        run: |
+          run_id=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow scan-deployed-images.yml \
+            --commit "$SHA" --event pull_request --limit 1 --json databaseId --jq '.[0].databaseId')
+          if [ -n "$run_id" ]; then
+            # Only the gate job is re-run (the scans are kept); it reads the new acknowledgement.
+            gh run rerun "$run_id" --repo "$GITHUB_REPOSITORY" --failed \
+              || echo "The gate had not failed or is still running: it will pick the acknowledgement up on its next run."
+          fi
+
+      # ---- /name and /add-ref ------------------------------------------------------------
+      - name: Refuse outside a staging PR
+        id: scope
+        if: >-
+          steps.who.outputs.allowed == 'true' &&
+          (steps.parse.outputs.command == '/name' || steps.parse.outputs.command == '/add-ref')
+        env:
+          HEAD: ${{ steps.pr.outputs.head }}
+          BASE: ${{ steps.pr.outputs.base }}
+          SAME_REPO: ${{ steps.pr.outputs.same_repo }}
+          TOKEN: ${{ secrets.PR_COMMANDS_TOKEN }}
+        run: |
+          case "$HEAD" in staging/*) staging=yes ;; *) staging=no ;; esac
+          if [ "$BASE" != "pre-prod" ] || [ "$staging" != "yes" ] || [ "$SAME_REPO" != "true" ]; then
+            echo "These commands change files on the PR branch, so they only work on a \`staging/*\` -> \`pre-prod\` PR. \`$HEAD\` is frozen once it reaches pre-prod: run the command on the staging PR instead." > reply.md
+          elif [ -z "$TOKEN" ]; then
+            echo "The \`PR_COMMANDS_TOKEN\` secret is not configured, so the bot cannot push to \`$HEAD\`." > reply.md
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout the PR branch (data only)
+        if: steps.scope.outputs.ok == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ steps.pr.outputs.head }}
+          path: work
+          token: ${{ secrets.PR_COMMANDS_TOKEN }}
+          persist-credentials: true # needed to push; the token is removed with the runner
+
+      - name: Apply the command and commit it
+        if: steps.scope.outputs.ok == 'true'
+        env:
+          COMMAND: ${{ steps.parse.outputs.command }}
+          HEAD: ${{ steps.pr.outputs.head }}
+        run: |
+          set -uo pipefail
+          if [ "$COMMAND" = "/name" ]; then
+            file=info/version.json
+            python3 tools/scripts/pr_commands.py name "work/$file" > reply.md
+          else
+            file=info/references.json
+            python3 tools/scripts/pr_commands.py add-ref "work/$file" > reply.md
+          fi
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            [ "$status" -eq 3 ] || echo "The command failed unexpectedly, see the workflow run." > reply.md
+            exit 0
+          fi
+          cd work
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$file"
+          printf '%s\n\nRequested by @%s in #%s\n' "chore: $(head -c 120 ../reply.md | head -1)" "$ACK_USER" "$PR" > ../commit-message.txt
+          git commit -q -F ../commit-message.txt
+          if ! git push origin "HEAD:refs/heads/$HEAD"; then
+            echo "The change could not be pushed to \`$HEAD\` (the branch moved or the token cannot push). Run the command again." > ../reply.md
+          fi
+
+      - name: Reply on the PR
+        if: always() && hashFiles('reply.md') != ''
+        run: gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file reply.md

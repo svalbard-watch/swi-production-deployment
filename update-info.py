@@ -12,8 +12,8 @@ BUMP_ORDER = {"patch": 0, "minor": 1, "major": 2}
 
 
 def extract_versions_from_compose():
-    # Find all compose files
-    compose_files = glob.glob("**/[cd]ompose*.yml", recursive=True)
+    # Find all compose and stack files
+    compose_files = glob.glob("**/[cd]ompose*.yml", recursive=True) + glob.glob("**/stack*.yml", recursive=True)
     versions = {}
 
     for compose_file in compose_files:
@@ -27,7 +27,7 @@ def extract_versions_from_compose():
                     if "image" in service:
                         image = service["image"]
                         if isinstance(image, str) and image.startswith(
-                            "ghcr.io/unis-svalbard-weather-information/"
+                            "ghcr.io/svalbard-watch/"
                         ):
                             repo = image.split("/")[-1].split(":")[0]
                             version = image.split(":")[-1] if ":" in image else "latest"
@@ -182,7 +182,7 @@ def update_version_json(versions):
     # Update or add components
     for repo, version in versions.items():
         new_comp[repo] = {
-            "url": f"https://github.com/UNIS-Svalbard-Weather-Information/{repo}",
+            "url": f"https://github.com/svalbard-watch/{repo}",
             "version": version,
         }
 
