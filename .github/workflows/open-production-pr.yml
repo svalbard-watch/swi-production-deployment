@@ -39,7 +39,7 @@ jobs:
           [ -f info/.release-baseline.json ] && args+=(info/.release-baseline.json)
           {
             echo "body<<EOF"
-            python3 scripts/promotion_summary.py "${args[@]}"
+            python3 scripts/promotion_summary.py --production "${args[@]}"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 

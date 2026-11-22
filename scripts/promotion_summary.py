@@ -1,6 +1,8 @@
 """Markdown body for the pre-prod -> main promotion PR.
 
-Usage: promotion_summary.py <base-version.json> <head-version.json> [<baseline.json>]
+Usage: promotion_summary.py [--production] <base-version.json> <head-version.json> [<baseline.json>]
+
+--production marks the pre-prod -> main PR, where /name and /add-ref are no longer available.
 
 Compares the component versions of main (base) with pre-prod (head) and prints a table, so
 reviewers see what ships without reading a raw diff. When the cycle baseline is given, also
@@ -33,7 +35,7 @@ def _tick(value):
     return f"`{value}`" if value else "-"
 
 
-def build_summary(base, head, baseline=None):
+def build_summary(base, head, baseline=None, production=False):
     old, new = _components(base), _components(head)
     rows = []
     for name in sorted(set(old) | set(new)):
@@ -83,16 +85,61 @@ def build_summary(base, head, baseline=None):
         ]
         for name, before, after, note, _ in rows:
             lines.append(f"| {_link(name, head)} | {_tick(before)} | {_tick(after)} | {note} |")
+    lines += ["", maintainer_help(production)]
     return "\n".join(lines) + "\n"
 
 
+def maintainer_help(production):
+    """Collapsed list of the PR comment commands (scripts/pr_commands.py), for maintainers."""
+    where = "staging PR only" if production else "this PR"
+    lines = [
+        "<details><summary><b>Maintainer commands</b> (devops-team: write them as a comment on this PR)</summary>",
+        "",
+        "| Command | What it does | Works on |",
+        "| --- | --- | --- |",
+        "| `/ignore <image> <CVE-id or all> <reason> until YYYY-MM-DD` | Acknowledges a finding of the "
+        "**Image security gate** (or every finding of the image with `all`) for this PR and re-runs the gate. "
+        "`until` is optional (default 14 days, maximum 90). The gate comment shows the exact command for "
+        "each finding. | this PR |",
+        f"| `/name <release name>` | Sets the release name (`release_name` in `info/version.json`), "
+        f"used in the GitHub release title. | {where} |",
+        f"| `/add-ref` followed by a bibtex code block | Adds the BibTeX entry to `info/references.json`; "
+        f"the BibTeX `note` field becomes the tag shown in the app. | {where} |",
+        "",
+        "Example:",
+        "",
+        "````",
+        "/add-ref",
+        "```bibtex",
+        "@misc{npi_geodata,",
+        "  title = {Norwegian Polar Institute Map Data and Services},",
+        "  author = {Norwegian Polar Institute},",
+        "  year = {2024},",
+        "  url = {https://geodata.npolar.no/},",
+        "  note = {map-layer}",
+        "}",
+        "```",
+        "````",
+    ]
+    if production:
+        lines += [
+            "",
+            "`/name` and `/add-ref` change files on the PR branch. `pre-prod` is frozen at this stage, "
+            "so run them on the `staging/*` PR instead.",
+        ]
+    lines += ["", "</details>"]
+    return "\n".join(lines)
+
+
 def main(argv):
-    if len(argv) not in (3, 4):
+    args = [a for a in argv[1:] if a != "--production"]
+    production = len(args) != len(argv) - 1
+    if len(args) not in (2, 3):
         print(__doc__, file=sys.stderr)
         return 2
-    base, head = (json.loads(Path(p).read_text()) for p in argv[1:3])
-    baseline = json.loads(Path(argv[3]).read_text()) if len(argv) == 4 else None
-    sys.stdout.write(build_summary(base, head, baseline))
+    base, head = (json.loads(Path(p).read_text()) for p in args[:2])
+    baseline = json.loads(Path(args[2]).read_text()) if len(args) == 3 else None
+    sys.stdout.write(build_summary(base, head, baseline, production))
     return 0
 
 

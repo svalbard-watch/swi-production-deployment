@@ -35,6 +35,14 @@ class PromotionSummaryTest(unittest.TestCase):
         self.assertIn("| [f](https://example.com/f) | - | `2.11.0` | new |", out)
         self.assertNotIn("raised to a major version by: **f**", out)
 
+    def test_lists_the_maintainer_commands(self):
+        base = version("2.0.9", a="1.0.0")
+        out = build_summary(base, base)
+        for command in ("/ignore", "/name", "/add-ref"):
+            self.assertIn(command, out)
+        self.assertNotIn("frozen", out)
+        self.assertIn("frozen", build_summary(base, base, production=True))
+
     def test_no_changes(self):
         base = version("2.0.9", a="1.0.0")
         self.assertIn("No component version changes.", build_summary(base, base))
