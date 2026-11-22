@@ -1,23 +1,22 @@
 name: Scan deployed images
 
-# Scans every image referenced by stack.yml, not just the ones this organisation
-# builds. A service repository only scans its image when its own CI runs, so a base
-# image fix released later (OpenSSL, libpcre2, ...) would go unnoticed in production;
-# redis and nginx have no CI at all. Runs daily, and on pull requests that change
-# the stack.
+# Image security gate: scans every image referenced by stack.yml, not just the ones this
+# organisation builds. A service repository only scans its image when its own CI runs, so a
+# base image fix released later (OpenSSL, libpcre2, ...) would go unnoticed in production;
+# redis and nginx have no CI at all.
 #
-# Images with a current entry in .github/image-scan-exceptions.json are reported but
-# never fail the run. Each exception carries a reason and an end date.
+# One Trivy job per image (the matrix), then the `gate` job combines the reports into a single
+# pass/fail check, "Image security gate", and posts the result as a comment on the promotion
+# PR. A fixable HIGH/CRITICAL finding in an enforced image fails the gate until a devops-team
+# member acknowledges it from the PR (/ignore, see pr-commands.yml); acknowledgements are per PR
+# and dated. Images with a current entry in .github/image-scan-exceptions.json are reported
+# but never fail. Runs on every promotion PR (no paths filter, like the smoke test) and daily.
 
 on:
   schedule:
     - cron: "30 4 * * *"
   pull_request:
-    paths:
-      - stack.yml
-      - .github/image-scan-exceptions.json
-      - .github/workflows/scan-deployed-images.yml
-      - scripts/scan_images.py
+    branches: [pre-prod, main]
   workflow_dispatch: {}
 
 permissions:
@@ -26,12 +25,6 @@ permissions:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-
-env:
-  # "false": fixable HIGH/CRITICAL findings are listed in the run summary and as
-  # warnings, but never fail the run (report mode). Set to "true" to make findings in
-  # enforced images fail it, which also turns failed scheduled runs into notifications.
-  ENFORCE: "false"
 
 jobs:
   matrix:
@@ -69,6 +62,7 @@ jobs:
       matrix: ${{ fromJSON(needs.matrix.outputs.matrix) }}
     env:
       IMAGE: ${{ matrix.image }}
+      NAME: ${{ matrix.name }}
       MODE: ${{ matrix.mode }}
       NOTE: ${{ matrix.note }}
     steps:
@@ -104,11 +98,79 @@ jobs:
             if [ -n "$NOTE" ]; then echo "> $NOTE"; fi
             python3 scripts/scan_images.py summary trivy.json | grep -v '^findings='
           } >> "$GITHUB_STEP_SUMMARY"
-          COUNT="$(python3 scripts/scan_images.py summary trivy.json | sed -n 's/^findings=//p')"
-          if [ "$COUNT" -gt 0 ]; then
-            echo "::warning title=$IMAGE::$COUNT fixable HIGH/CRITICAL findings ($MODE mode)"
-            if [ "$MODE" = "enforce" ] && [ "$ENFORCE" = "true" ]; then
-              echo "::error::$IMAGE has $COUNT fixable HIGH/CRITICAL findings"
-              exit 1
-            fi
+          # The verdict is the gate job's: this job only fails when the scan itself broke.
+          mv trivy.json "$NAME.json"
+
+      - name: Keep the report for the gate
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: trivy-${{ matrix.name }}
+          path: ${{ matrix.name }}.json
+          retention-days: 7
+
+  gate:
+    name: Image security gate
+    needs: [matrix, scan]
+    # Also when a scan job failed: a missing report must fail the gate, not skip it.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write # the result comment
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      MATRIX: ${{ needs.matrix.outputs.matrix }}
+      PR: ${{ github.event.pull_request.number }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Download the scan reports
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: trivy-*
+          path: reports
+          merge-multiple: true
+
+      - name: Read the acknowledgements stored in the PR comment
+        run: |
+          set -euo pipefail
+          : > comment-id.txt
+          if [ -n "$PR" ]; then
+            # Only the comment written by this workflow's bot counts: nobody else can forge an acknowledgement.
+            gh api --paginate "repos/$GITHUB_REPOSITORY/issues/$PR/comments"               --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("<!-- swi-image-gate -->"))) | .id'               | head -1 > comment-id.txt
           fi
+          : > old-comment.md
+          if [ -s comment-id.txt ]; then
+            gh api "repos/$GITHUB_REPOSITORY/issues/comments/$(cat comment-id.txt)" --jq .body > old-comment.md
+          fi
+          python3 scripts/scan_images.py acks old-comment.md > acks.json
+          cat acks.json
+
+      - name: Combine the reports
+        id: verdict
+        run: |
+          set -euo pipefail
+          echo "$MATRIX" > matrix.json
+          python3 scripts/scan_images.py aggregate matrix.json reports acks.json comment.md | tee verdict.txt
+          cat comment.md >> "$GITHUB_STEP_SUMMARY"
+          cat verdict.txt >> "$GITHUB_OUTPUT"
+
+      - name: Post the result on the PR
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          if [ -s comment-id.txt ]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$(cat comment-id.txt)" -F body=@comment.md >/dev/null
+          else
+            gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@comment.md >/dev/null
+          fi
+
+      - name: Fail when the gate failed
+        if: steps.verdict.outputs.verdict != 'pass'
+        run: |
+          echo "::error::Image security gate failed - see the PR comment or the job summary"
+          exit 1

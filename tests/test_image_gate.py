@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from scan_images import GATE_MARKER, decode_acks, evaluate, render_comment  # noqa: E402
+from scan_images import GATE_MARKER, decode_acks, evaluate, render_comment, replace_acks  # noqa: E402
 
 TODAY = datetime.date(2026, 11, 22)
 
@@ -94,6 +94,15 @@ class CommentTest(unittest.TestCase):
         self.assertIn("/ignore a CVE-1 <reason> until 2026-12-06", body)
         self.assertIn("@alice", body)
         self.assertEqual(decode_acks(body), acks)
+
+    def test_replace_acks_updates_a_comment_or_creates_a_bare_one(self):
+        old = [ack("a", "CVE-1")]
+        new = [ack("a", "all")]
+        body = render_comment("pass", [], old, TODAY)
+        self.assertEqual(decode_acks(replace_acks(body, new)), new)
+        self.assertIn("Image security gate", replace_acks("", new))
+        self.assertTrue(replace_acks("", new).startswith(GATE_MARKER))
+        self.assertEqual(decode_acks(replace_acks("", new)), new)
 
     def test_decode_acks_is_lenient(self):
         self.assertEqual(decode_acks("no marker"), [])

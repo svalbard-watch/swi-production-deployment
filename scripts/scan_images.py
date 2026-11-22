@@ -19,6 +19,9 @@ Two subcommands, both used by .github/workflows/scan-deployed-images.yml:
       enforced image has a fixable HIGH/CRITICAL finding that no acknowledgement covers, or
       when a report is missing (a scan that did not run must not read as a pass).
 
+  scan_images.py acks COMMENT_FILE            print the acknowledgements stored in a comment
+  scan_images.py set-acks COMMENT_FILE ACKS   store acknowledgements in a comment file
+
 Acknowledgements (JSON list, kept in the PR comment by scripts/pr_commands.py): {"image":
 "<short name>", "vuln": "<CVE id>" or "all", "reason": "...", "until": "YYYY-MM-DD", "by":
 "<login>"}. An acknowledgement past its date no longer counts.
@@ -195,6 +198,14 @@ def decode_acks(comment_body):
         return []
 
 
+def replace_acks(comment_body, acks):
+    """The comment with its stored acknowledgements replaced; a bare gate comment if none."""
+    marker = f"<!-- swi-acks: {encode_acks(acks)} -->"
+    if ACKS_MARKER.search(comment_body or ""):
+        return ACKS_MARKER.sub(lambda _: marker, comment_body)
+    return f"{GATE_MARKER}\n## ⏳ Image security gate: running\n\n{marker}\n"
+
+
 def render_comment(verdict, images, acks, today, run_url=""):
     blocked = sum(len(i["open"]) for i in images if i["status"] == "blocked")
     errors = [i["name"] for i in images if i["status"] == "error"]
@@ -285,6 +296,19 @@ def main(argv):
             text, count = summarize(json.load(handle))
         print(text)
         print(f"findings={count}")
+        return 0
+    if len(argv) == 3 and argv[1] == "acks":
+        # Acknowledgements stored in a comment file ([] when the file is empty or missing).
+        body = open(argv[2], encoding="utf-8").read() if os.path.exists(argv[2]) else ""
+        print(json.dumps(decode_acks(body)))
+        return 0
+    if len(argv) == 4 and argv[1] == "set-acks":
+        # set-acks COMMENT_FILE ACKS_JSON: rewrite the comment file with the new acknowledgements.
+        body = open(argv[2], encoding="utf-8").read() if os.path.exists(argv[2]) else ""
+        with open(argv[3], encoding="utf-8") as handle:
+            acks = json.load(handle)
+        with open(argv[2], "w", encoding="utf-8") as handle:
+            handle.write(replace_acks(body, acks))
         return 0
     if len(argv) == 6 and argv[1] == "aggregate":
         with open(argv[2], encoding="utf-8") as handle:
