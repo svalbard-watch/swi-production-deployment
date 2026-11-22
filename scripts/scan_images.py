@@ -69,6 +69,23 @@ def repository(image):
     return image
 
 
+def source_url(image):
+    """Where to go to fix an image: its GitHub repository, or its Docker Hub page.
+
+    ghcr.io/<owner>/<name>:tag -> https://github.com/<owner>/<name> (the repositories are named
+    like their images); 'nginx:1.31-alpine' -> https://hub.docker.com/_/nginx; 'org/app' -> .../r/org/app.
+    """
+    repo = repository(image)
+    parts = repo.split("/")
+    if parts[0] == "ghcr.io" and len(parts) >= 3:
+        return f"https://github.com/{parts[1]}/{parts[2]}"
+    if len(parts) == 1:
+        return f"https://hub.docker.com/_/{parts[0]}"
+    if len(parts) == 2 and "." not in parts[0]:
+        return f"https://hub.docker.com/r/{repo}"
+    return ""
+
+
 def parse_exceptions(text):
     exceptions = json.loads(text) if text.strip() else []
     for entry in exceptions:
@@ -226,20 +243,25 @@ def render_comment(verdict, images, acks, today, run_url=""):
         "",
         sub,
         "",
-        "| Image | Result | Critical | High | Acknowledged |",
-        "|---|---|--:|--:|--:|",
+        "| Image | Result | Critical | High | Acknowledged | Fix it in |",
+        "|---|---|--:|--:|--:|---|",
     ]
     for item in images:
         crit = sum(1 for f in item["open"] if f[0] == "CRITICAL")
         high = sum(1 for f in item["open"] if f[0] == "HIGH")
+        link = source_url(item["image"])
+        where = f"[repo]({link})" if link and item["status"] in ("blocked", "error", "report") else ""
         lines.append(
-            f"| `{item['name']}` | {STATUS_LABEL[item['status']]} | {crit} | {high} | {len(item['acked'])} |"
+            f"| `{item['name']}` | {STATUS_LABEL[item['status']]} | {crit} | {high} | {len(item['acked'])} | {where} |"
         )
     example_date = today + datetime.timedelta(days=14)
     for item in images:
         if not item["open"] and not item["note"]:
             continue
         lines += ["", f"<details><summary><b>{item['name']}</b>: {len(item['open'])} open finding(s)</summary>", ""]
+        link = source_url(item["image"])
+        if link:
+            lines += [f"Image `{item['image']}`, source: {link}", ""]
         if item["note"]:
             lines += [f"> {item['note']}", ""]
         if item["open"]:

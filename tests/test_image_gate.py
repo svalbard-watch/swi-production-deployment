@@ -5,7 +5,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from scan_images import GATE_MARKER, decode_acks, evaluate, render_comment, replace_acks  # noqa: E402
+from scan_images import (  # noqa: E402
+    GATE_MARKER,
+    decode_acks,
+    evaluate,
+    render_comment,
+    replace_acks,
+    source_url,
+)
 
 TODAY = datetime.date(2026, 11, 22)
 
@@ -103,6 +110,20 @@ class CommentTest(unittest.TestCase):
         self.assertIn("Image security gate", replace_acks("", new))
         self.assertTrue(replace_acks("", new).startswith(GATE_MARKER))
         self.assertEqual(decode_acks(replace_acks("", new)), new)
+
+    def test_failing_images_link_to_their_repository(self):
+        entries = [entry("a"), entry("b")]
+        verdict, images = evaluate(entries, {"a": report("CVE-1"), "b": report()}, [], TODAY)
+        body = render_comment(verdict, images, [], TODAY)
+        self.assertIn("| [repo](https://github.com/o/a) |", body)
+        self.assertNotIn("https://github.com/o/b", body)  # clean images need no link
+        self.assertIn("source: https://github.com/o/a", body)
+
+    def test_source_url(self):
+        self.assertEqual(source_url("ghcr.io/svalbard-watch/swi-titiller:0.1.0"), "https://github.com/svalbard-watch/swi-titiller")
+        self.assertEqual(source_url("nginx:1.31-alpine"), "https://hub.docker.com/_/nginx")
+        self.assertEqual(source_url("bitnami/redis:7"), "https://hub.docker.com/r/bitnami/redis")
+        self.assertEqual(source_url("quay.io/org/app:1"), "")
 
     def test_decode_acks_is_lenient(self):
         self.assertEqual(decode_acks("no marker"), [])
