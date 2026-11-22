@@ -6,7 +6,7 @@
   "components": {
     "swi-mapproxy": {
       "url": "https://github.com/svalbard-watch/swi-mapproxy",
-      "version": "trixie-p3.13-mp7.0.0-0.0.18"
+      "version": "trixie-p3.13-mp7.0.0-0.0.20"
     },
     "swi-mapcache-seaice": {
       "url": "https://github.com/svalbard-watch/swi-mapcache-seaice",
@@ -22,7 +22,7 @@
     },
     "swi-titiller": {
       "url": "https://github.com/svalbard-watch/swi-titiller",
-      "version": "0.1.0"
+      "version": "0.1.1"
     },
     "swi-metobs-caching": {
       "url": "https://github.com/svalbard-watch/swi-metobs-caching",
@@ -34,11 +34,11 @@
     },
     "swi-elevationapi": {
       "url": "https://github.com/svalbard-watch/swi-elevationapi",
-      "version": "1.0.1"
+      "version": "1.0.2"
     },
     "swi-frontend": {
       "url": "https://github.com/svalbard-watch/swi-frontend",
-      "version": "2.11.0"
+      "version": "2.12.0"
     }
   }
 }

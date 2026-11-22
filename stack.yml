@@ -81,7 +81,7 @@ services:
   # MapProxy WMTS server, plus the sea-ice and avalanche cron caching jobs it depends on.
 
   mapproxy-server:
-    image: ghcr.io/svalbard-watch/swi-mapproxy:trixie-p3.13-mp7.0.0-0.0.18
+    image: ghcr.io/svalbard-watch/swi-mapproxy:trixie-p3.13-mp7.0.0-0.0.20
     cap_drop: [ALL]
     volumes:
       - map-data:/mapproxy/data
@@ -265,7 +265,7 @@ services:
       - internal
 
   met-tilling-api:
-    image: ghcr.io/svalbard-watch/swi-titiller:0.1.0
+    image: ghcr.io/svalbard-watch/swi-titiller:0.1.1
     cap_drop: [ALL]
     read_only: true
     volumes:
@@ -304,8 +304,11 @@ services:
   # Dokploy only deploys the stack file. `$$` is escaping for a literal `$`.
   # Titiler runs several replicas behind the Swarm VIP, so nginx resolves it through
   # Docker's embedded DNS at request time rather than once at start.
+  # The -slim variant is deliberate: this is a plain proxy cache, and the full image adds the XSLT,
+  # GeoIP and image-filter modules whose libxml2 (CVE-2026-86144, no fixed nginx build yet)
+  # is the only finding the image scan reports.
   titiler-cache:
-    image: nginx:1.31-alpine
+    image: nginx:1.31-alpine-slim
     # The master process starts as root to chown the cache directory and drop to the nginx
     # user for its workers, so keep exactly those capabilities.
     cap_drop: [ALL]
@@ -439,7 +442,7 @@ services:
   # ── elevation-service ───────────────────────────────────────────────────
 
   elevation_api:
-    image: ghcr.io/svalbard-watch/swi-elevationapi:1.0.1
+    image: ghcr.io/svalbard-watch/swi-elevationapi:1.0.2
     environment:
       # Optional: another DTM archive (the CI smoke test uses the 50 m model). Empty = the 20 m
       # model of the image's datasets.json.
@@ -520,7 +523,7 @@ services:
   # swi-gate (basic auth, staging) and swi-open (no-op, production default).
 
   frontend:
-    image: ghcr.io/svalbard-watch/swi-frontend:2.11.0
+    image: ghcr.io/svalbard-watch/swi-frontend:2.12.0
     cap_drop: [ALL]
     read_only: true
     volumes:

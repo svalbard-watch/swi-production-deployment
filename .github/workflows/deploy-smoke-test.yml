@@ -277,15 +277,17 @@ jobs:
           } >> .env
           set -a; . ./.env; set +a
           docker stack deploy --detach=true --with-registry-auth -c stack.yml -c .github/ci-override.yml swi
-          # Traefik picks the changed labels up from the Swarm API; wait until the gate answers.
-          for _ in $(seq 1 30); do
-            code=$(curl -k -s -o /dev/null -w '%{http_code}' https://portal.localhost/)
-            [ "$code" = "401" ] && break
-            sleep 2
-          done
+          # Each service is updated (start-first) on its own schedule, and Traefik only reads a
+          # new label set once the replacement task is healthy (and polls the Swarm API), so
+          # the gate does not appear on every host at the same moment. Wait per URL, not just
+          # for the portal, before asserting.
           for url in https://portal.localhost/ https://mapserver.localhost/ https://api.localhost/tiles/openapi.json https://api.localhost/public/ https://api.localhost/oeapi/; do
-            anon=$(curl -k -s -o /dev/null -w '%{http_code}' "$url")
-            [ "$anon" = "401" ] || { echo "FAIL: $url returned $anon without credentials, expected 401"; exit 1; }
+            for _ in $(seq 1 60); do
+              anon=$(curl -k -s -o /dev/null -w '%{http_code}' "$url")
+              [ "$anon" = "401" ] && break
+              sleep 3
+            done
+            [ "$anon" = "401" ] || { echo "FAIL: $url returned $anon without credentials after 180 s, expected 401"; exit 1; }
             authed=$(curl -k -s -o /dev/null -w '%{http_code}' -u smoke:smoke-pass "$url")
             [ "$authed" != "401" ] || { echo "FAIL: $url rejected valid credentials"; exit 1; }
             echo "OK: $url -> 401 anonymous, $authed with credentials"

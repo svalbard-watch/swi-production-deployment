@@ -58,12 +58,35 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # pyyaml: scripts/promotion_summary.py imports update-info.py, which needs it.
+          python3 -m pip install --quiet pyyaml
+
+          # Same table as the production PR (see open-production-pr.yml): what this branch
+          # changes compared with what pre-prod runs now. The body is rewritten on every run,
+          # so bumps landing on the staging branch show up in the open PR.
+          body_for() {
+            branch="$1"
+            tmp=$(mktemp -d)
+            git show "origin/pre-prod:info/version.json" > "$tmp/base.json"
+            git show "origin/$branch:info/version.json" > "$tmp/head.json"
+            args=("$tmp/base.json" "$tmp/head.json")
+            if git show "origin/$branch:info/.release-baseline.json" > "$tmp/baseline.json" 2>/dev/null; then
+              args+=("$tmp/baseline.json")
+            fi
+            if [ -f scripts/promotion_summary.py ] && summary=$(python3 scripts/promotion_summary.py "${args[@]}"); then
+              printf "Promotes \`%s\` to pre-prod, which deploys it to staging. Merge when ready.\n\n%s\n" "$branch" "$summary"
+            else
+              printf "Opened automatically - \`%s\` has commits pre-prod does not have yet. Merge when ready to deploy to staging.\n" "$branch"
+            fi
+          }
+
           while IFS= read -r branch; do
             [ -z "$branch" ] && continue
 
             existing=$(gh pr list --head "$branch" --base pre-prod --state open --json number --jq '.[0].number')
             if [ -n "$existing" ]; then
-              echo "$branch: PR #$existing already open into pre-prod"
+              echo "$branch: PR #$existing already open into pre-prod - refreshing its description"
+              gh pr edit "$existing" --body "$(body_for "$branch")"
               continue
             fi
 
@@ -75,5 +98,5 @@ jobs:
             echo "$branch: opening promotion PR"
             gh pr create --head "$branch" --base pre-prod \
               --title "Promote $branch to pre-prod" \
-              --body "Opened automatically - \`$branch\` has commits pre-prod doesn't have yet. Merge when ready to deploy to staging."
+              --body "$(body_for "$branch")"
           done < staging_branches.txt
