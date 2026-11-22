@@ -37,7 +37,18 @@ services:
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
       - "--providers.docker.network=dokploy-network"
-      
+
+      # The stack is deployed with `docker stack deploy`, so its Traefik labels are Swarm
+      # service labels (deploy.labels), which only the swarm provider reads. The docker
+      # provider above stays for this container's own labels (the dashboard).
+      - "--providers.swarm=true"
+      - "--providers.swarm.exposedbydefault=false"
+      - "--providers.swarm.network=dokploy-network"
+      # The swarm provider polls (default 15 s) instead of following events like the docker
+      # provider, and only lists tasks once healthy: a service that just turned healthy would
+      # answer 404 until the next poll.
+      - "--providers.swarm.refreshSeconds=2s"
+
       # API & Dashboard 
       - "--api.dashboard=true"
       - "--api.insecure=false"

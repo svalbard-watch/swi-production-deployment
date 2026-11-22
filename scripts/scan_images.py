@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Helpers for the scheduled scan of the images deployed by compose.yml.
+"""Helpers for the scheduled scan of the images deployed by stack.yml.
 
 Two subcommands, both used by .github/workflows/scan-deployed-images.yml:
 

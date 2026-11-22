@@ -12,8 +12,8 @@ BUMP_ORDER = {"patch": 0, "minor": 1, "major": 2}
 
 
 def extract_versions_from_compose():
-    # Find all compose files
-    compose_files = glob.glob("**/[cd]ompose*.yml", recursive=True)
+    # Find all compose and stack files
+    compose_files = glob.glob("**/[cd]ompose*.yml", recursive=True) + glob.glob("**/stack*.yml", recursive=True)
     versions = {}
 
     for compose_file in compose_files:

@@ -1,17 +1,21 @@
 # Local Traefik testing
 
-A local harness for exercising the full stack (`../compose.yml`) behind Traefik with TLS,
+A local harness for exercising the full stack (`../stack.yml`) behind Traefik with TLS,
 the same way Dokploy routes it in production — so routing and CORS behavior can be checked
 before promoting a release. This is for local functional testing; it is not a production
 deployment.
 
 ## 1. Create the external network
 
-Both this Traefik stack and the main `compose.yml` expect an external `dokploy-network` to
-already exist (Dokploy creates this on the real host; locally you create it once yourself):
+Both this Traefik stack and the main `stack.yml` expect an external `dokploy-network` to
+already exist (Dokploy creates this on the real host; locally you create it once yourself).
+The main stack is a Docker Swarm stack, so this local Docker needs Swarm mode and the network
+must be an attachable overlay network (the Traefik container, which is not a Swarm service,
+joins it too):
 
 ```bash
-docker network create dokploy-network
+docker swarm init    # once; skip if this Docker is already a Swarm manager
+docker network create --driver overlay --attachable dokploy-network
 ```
 
 ## 2. Generate a local TLS certificate
@@ -39,7 +43,7 @@ docker compose -f traefik-testing/compose.yml up -d
 ```
 
 The dashboard is at `https://dashboard.localhost` (password `test123`, per the basic-auth
-hash already in `compose.yml` — a local-only convenience credential, not a real secret).
+hash already in `traefik-testing/compose.yml` — a local-only convenience credential, not a real secret).
 
 ## 4. Start the main stack
 
@@ -50,21 +54,21 @@ cp .env.example .env
 # and set TRAEFIK_CERT_RESOLVER= (empty) - there is no Let's Encrypt resolver locally.
 # so this starts 1 container per service instead of production's 3 - everything else in
 # .env.example already defaults to *.localhost hosts, fine as-is for local testing.
-docker compose -f compose.yml up -d
+
+# `docker stack deploy` does not read .env itself, so export it first.
+set -a; . ./.env; set +a
+docker stack deploy -c stack.yml swi
 ```
 
-Note: modern Docker Compose (verified with 29.3.1) honors `deploy.replicas` even outside
-Swarm mode — bringing this up with plain `docker compose up` really does start
-`SWI_MAPPROXY_REPLICAS` / `SWI_METOBS_REPLICAS` / `SWI_TITILER_REPLICAS` copies of
-mapproxy-server/met-public-api/met-tilling-api (3 each if you didn't override them). It does *not* honor `update_config` (the `start-first` rolling-update
-behavior), since that's a Swarm scheduler feature with no plain-Compose equivalent. To
-exercise the actual rolling-update behavior, initialize a local single-node Swarm instead
-(`docker swarm init`) and deploy with `docker stack deploy -c compose.yml swi`.
+Traefik reads the stack's labels through its swarm provider (they are service labels under
+`deploy.labels`, which the plain docker provider does not see); `traefik-testing/compose.yml`
+enables both providers.
 
 Give services a minute to pass their `start_period` healthchecks, then check status:
 
 ```bash
-docker compose ps
+docker stack services swi
+docker stack ps swi
 ```
 
 ## 5. Verify routing
@@ -83,7 +87,7 @@ browser warning, since it's a local CA)
 Each of these should return an `Access-Control-Allow-Origin` header reflecting
 `CORS_ALLOWED_ORIGINS` from `.env` (default `*`). mapproxy, `met-tilling-api` (titiller),
 and `elevation_api` enforce this via a Traefik middleware; `met-public-api` (metobs-backend)
-enforces it at the application level instead (see `compose.yml`'s top comment for why that
+enforces it at the application level instead (see `stack.yml`'s top comment for why that
 one's intentionally different) — check it the same way, the header should still appear,
 just added by the app rather than Traefik.
 
@@ -97,12 +101,12 @@ curl -k -I -H "Origin: https://example.com" https://api.localhost/public/
 Look for `access-control-allow-origin` in the response headers of each. A missing header on
 one route (and present on the others) usually means that service's Traefik CORS middleware
 label isn't applied to its router — check the `traefik.http.routers.<name>.middlewares=`
-label includes the `*cors` middleware for that service in `compose.yml`.
+label includes the `*cors` middleware for that service in `stack.yml`.
 
 ## 7. Tear down
 
 ```bash
-docker compose -f compose.yml down
+docker stack rm swi
 docker compose -f traefik-testing/compose.yml down
 docker network rm dokploy-network
 ```
