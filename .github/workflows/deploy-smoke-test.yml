@@ -1,7 +1,7 @@
 name: Deployment smoke test
 
-# Gates BOTH promotion PRs (staging -> pre-prod and pre-prod -> main): brings the real
-# stack up behind the same Traefik config used for local testing (see
+# Gates BOTH promotion PRs (staging -> pre-prod and pre-prod -> main): deploys the real
+# Swarm stack (docker stack deploy on a single-node Swarm, like Dokploy) behind the same Traefik config used for local testing (see
 # traefik-testing/readme.md), checks every long-running service's healthcheck, and
 # checks CORS headers on each routed endpoint - both that an allowed origin is let
 # through and that a disallowed one is actually blocked, not just that some header is
@@ -15,8 +15,8 @@ name: Deployment smoke test
 #
 # No paths: filter - deliberately runs on every PR into main or pre-prod regardless
 # of which files changed. Confirmed for real: a normal release cycle only bumps
-# info/version.json's placeholder, never compose.yml itself (that only changes when
-# update-versions.yml or a human bumps an image tag), so a paths: [compose.yml] filter meant
+# info/version.json's placeholder, never stack.yml itself (that only changes when
+# update-versions.yml or a human bumps an image tag), so a paths: [stack.yml] filter meant
 # this never actually ran for two full production releases (2.0.4, 2.0.5) - they
 # shipped with zero automated health/CORS verification and nothing even flagged it
 # as missing (mergeable_state showed "clean" throughout). The check is cheap and
@@ -64,11 +64,11 @@ jobs:
         # CORS_ALLOWED_ORIGINS deliberately mirrors production's real domain-bound
         # shape (two specific origins, not '*') so the CORS check below actually
         # exercises the allow/deny logic instead of trivially passing against a
-        # wildcard that can never fail. Must run before "Validate compose file" -
-        # compose.yml uses required (?Variable not set) env vars, so validating
+        # wildcard that can never fail. Must run before "Validate stack file" -
+        # stack.yml uses required (?Variable not set) env vars, so validating
         # against no .env at all fails every time regardless of whether the file is
         # actually valid. Confirmed via a real run: this ordering bug meant this
-        # check had never actually passed since path-filtering on compose.yml was
+        # check had never actually passed since path-filtering on the stack file was
         # added - it always failed at validation before ever reaching the real
         # health/CORS checks that are the actual point of this workflow.
         run: |
@@ -102,22 +102,32 @@ jobs:
           SWI_METOBS_FROST_API_KEY=smoke-test-key
           EOF
 
-      - name: Install a Docker Compose with pre_start support
-        # elevation_api prepares its data in a pre_start step, which the runner's preinstalled
-        # Compose rejects (also in the `compose config` validation below).
-        uses: docker/setup-compose-action@54042514f505b273907334ae2b9cdbb9a0213c1a # v2.4.0
-        with:
-          version: v5.5.1
+      - name: Lint the stack file and run the unit tests
+        # stack.yml is deployed with `docker stack deploy`: Compose-only keys (restart,
+        # depends_on, pre_start, container-level labels, ...) would be ignored or rejected there.
+        run: |
+          python3 -m pip install --quiet pyyaml
+          python3 scripts/lint_stack.py stack.yml
+          python3 -m unittest discover -s tests -v
 
-      - name: Validate compose file
-        run: docker compose -f compose.yml config >/dev/null
+      - name: Validate stack file
+        # `docker stack deploy` does not read .env itself (Dokploy injects the variables in
+        # production), so every step that deploys exports it into the shell first.
+        run: |
+          set -a; . ./.env; set +a
+          docker stack config -c stack.yml >/dev/null
+
+      - name: Initialise a single-node Swarm
+        run: docker swarm init
 
       - name: Resolve *.localhost hostnames explicitly
         run: |
           echo "127.0.0.1 mapserver.localhost api.localhost portal.localhost dashboard.docker.localhost" | sudo tee -a /etc/hosts
 
       - name: Create external network (Dokploy provides this in production)
-        run: docker network create dokploy-network
+        # An attachable overlay network: the Swarm services use it, and so does the Traefik
+        # container below, which is a plain Compose container and not a Swarm service.
+        run: docker network create --driver overlay --attachable dokploy-network
 
       - name: Generate local TLS cert for Traefik
         run: |
@@ -139,20 +149,23 @@ jobs:
           ACTOR: ${{ github.actor }}
         run: echo "$GHCR_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
 
-      - name: Bring the stack up
-        # Cron containers excluded: they need real upstream API keys to fetch live data
-        # and aren't part of the "does the stack come up healthy and route correctly"
-        # question this gate asks.
-        run: docker compose -f compose.yml up -d redis mapproxy-server met-public-api met-tilling-api titiler-cache elevation_api frontend
+      - name: Deploy the stack
+        # --with-registry-auth sends the runner's ghcr login to the Swarm node: unlike `docker compose
+        # up`, `docker stack deploy` lets the node pull the images, and swi-frontend is private, so
+        # without it the task is rejected with "No such image".
+        # Cron services excluded through the override file (replicas 0): they need real
+        # upstream API keys to fetch live data and aren't part of the "does the stack come up
+        # healthy and route correctly" question this gate asks.
+        run: |
+          set -a; . ./.env; set +a
+          docker stack deploy --detach=true --with-registry-auth -c stack.yml -c .github/ci-override.yml swi
 
       - name: Wait for services to report healthy
-        # Iterates every container per service, not just one: `docker compose ps -q`
-        # returns one ID per line per replica, and a bare `cid=$(...)` assignment
-        # (the previous version of this step) collapses all of them into a single
-        # multi-line string that `docker inspect` can't resolve - dormant only
-        # because this check never actually ran against real replica counts before
-        # (see the paths: filter fix above), and CI now deliberately runs with
-        # replicas set to 1. Hardened here so it stays correct regardless.
+        # Iterates every container per service, not just one: the filter below returns one ID
+        # per line per replica, and a bare `cid=$(...)` assignment would collapse all of them
+        # into a single multi-line string that `docker inspect` can't resolve. A service with
+        # no container yet (still pulling or being scheduled) counts as not healthy, so the
+        # loop can't pass before anything has started.
         run: |
           timeout=300
           elapsed=0
@@ -160,7 +173,11 @@ jobs:
           while true; do
             unhealthy=""
             for s in $services; do
-              for cid in $(docker compose -f compose.yml ps -q "$s"); do
+              cids=$(docker ps -q --filter "label=com.docker.swarm.service.name=swi_$s")
+              if [ -z "$cids" ]; then
+                unhealthy="$unhealthy $s(no container yet)"
+              fi
+              for cid in $cids; do
                 status=$(docker inspect --format='{{.State.Health.Status}}' "$cid" 2>/dev/null || echo "unknown")
                 if [ "$status" != "healthy" ]; then
                   unhealthy="$unhealthy $s:${cid:0:12}($status)"
@@ -173,7 +190,8 @@ jobs:
             fi
             if [ "$elapsed" -ge "$timeout" ]; then
               echo "Timed out waiting for:$unhealthy"
-              docker compose -f compose.yml logs
+              docker stack ps swi --no-trunc
+              for s in $services; do docker service logs --tail 50 "swi_$s" || true; done
               exit 1
             fi
             echo "Waiting on:$unhealthy"
@@ -245,9 +263,9 @@ jobs:
           echo "OK: frontend /tiles proxy goes through the titiler cache"
 
       - name: Staging auth check
-        # Re-deploys the Traefik-labelled services with the staging gate switched on and
-        # asserts every public host demands the password (and accepts it). Runs after the
-        # CORS check on purpose: with auth on, unauthenticated CORS probes would just see 401.
+        # Re-deploys the stack with the staging gate switched on and asserts every public host
+        # demands the password (and accepts it). Runs after the CORS check on purpose: with auth
+        # on, unauthenticated CORS probes would just see 401.
         run: |
           set -e
           hash=$(openssl passwd -apr1 smoke-pass)
@@ -255,8 +273,14 @@ jobs:
             echo "SWI_AUTH_MIDDLEWARE=swi-gate"
             echo "SWI_BASICAUTH_USERS='smoke:${hash}'"
           } >> .env
-          docker compose -f compose.yml up -d frontend mapproxy-server met-public-api titiler-cache elevation_api
-          sleep 20
+          set -a; . ./.env; set +a
+          docker stack deploy --detach=true --with-registry-auth -c stack.yml -c .github/ci-override.yml swi
+          # Traefik picks the changed labels up from the Swarm API; wait until the gate answers.
+          for _ in $(seq 1 30); do
+            code=$(curl -k -s -o /dev/null -w '%{http_code}' https://portal.localhost/)
+            [ "$code" = "401" ] && break
+            sleep 2
+          done
           for url in https://portal.localhost/ https://mapserver.localhost/ https://api.localhost/tiles/openapi.json https://api.localhost/public/ https://api.localhost/oeapi/; do
             anon=$(curl -k -s -o /dev/null -w '%{http_code}' "$url")
             [ "$anon" = "401" ] || { echo "FAIL: $url returned $anon without credentials, expected 401"; exit 1; }
@@ -268,6 +292,6 @@ jobs:
       - name: Tear down
         if: always()
         run: |
-          docker compose -f compose.yml down -v
+          docker stack rm swi || true
           docker compose -f traefik-testing/compose.yml down -v
           docker network rm dokploy-network || true

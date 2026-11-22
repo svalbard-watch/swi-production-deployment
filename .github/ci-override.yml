@@ -1,0 +1,17 @@
+# Used only by deploy-smoke-test.yml, as a second -c file on top of stack.yml.
+# The cron services need real upstream API keys to fetch live data and aren't part of the
+# "does the stack come up healthy and route correctly" question that workflow asks, so they
+# are deployed but not started.
+services:
+  CRON_seaice_cache:
+    deploy:
+      replicas: 0
+  CRON_avalanche_cache:
+    deploy:
+      replicas: 0
+  CRON_metobs_cache:
+    deploy:
+      replicas: 0
+  CRON_AAforecast_cache:
+    deploy:
+      replicas: 0

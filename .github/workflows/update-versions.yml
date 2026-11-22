@@ -1,7 +1,7 @@
 name: Update component versions
 
 # Replaces Renovate (which never landed a single bump here - every image-tag change in
-# compose.yml so far was made by hand). Checks every image pinned in the compose files
+# stack.yml so far was made by hand). Checks every image pinned in the compose and stack files
 # for a newer tag that actually exists in its registry (update_versions.py) and:
 # - our own ghcr.io/svalbard-watch/* images: commits the bumps,
 #   plus the regenerated info/version.json, straight onto the active staging/X.Y.Z
@@ -109,7 +109,7 @@ jobs:
           } > "$RUNNER_TEMP/message.txt"
           git config --global user.name "github-actions"
           git config --global user.email "github-actions@github.com"
-          git add -A -- '*compose*.yml' info/version.json
+          git add -A -- '*compose*.yml' 'stack*.yml' info/version.json
           git commit -F "$RUNNER_TEMP/message.txt"
           git push origin "HEAD:${{ steps.staging.outputs.branch }}"
 
@@ -150,7 +150,7 @@ jobs:
               cat "$RUNNER_TEMP/body.md"
             } > "$RUNNER_TEMP/pr-body.md"
 
-            git add -A -- '*compose*.yml'
+            git add -A -- '*compose*.yml' 'stack*.yml'
             git commit --quiet -m "$title"
 
             # Only force-push when the content actually changed (new upstream version,
